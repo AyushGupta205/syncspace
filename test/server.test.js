@@ -744,6 +744,110 @@ test('health endpoint identifies in-memory SQLite as degraded persistence', asyn
   assert.equal(response.status, process.env.NODE_ENV === 'production' ? 503 : 200);
 });
 
+test('health remains degraded after an unrelated SQLite write succeeds', async (t) => {
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+  const dbPath = path.join(process.cwd(), 'data', `test-persistence-error-${Date.now()}.db`);
+  const server = createPartyServer({ serveClient: false, dbPath });
+  await new Promise((resolve) => server.httpServer.listen(0, resolve));
+  t.after(async () => {
+    await server.close();
+    await Promise.all(['', '-wal', '-shm'].map((suffix) =>
+      fs.rm(`${dbPath}${suffix}`, { force: true })
+    ));
+  });
+
+  server.db.db.exec(`
+    CREATE TRIGGER reject_failed_room BEFORE INSERT ON rooms
+    WHEN NEW.id = 'FAIL01'
+    BEGIN SELECT RAISE(FAIL, 'forced persistence failure'); END;
+  `);
+  const failedRoom = {
+    id: 'FAIL01',
+    state: { videoId: VIDEO_A, currentTime: 0, isPlaying: false },
+  };
+  server.db.saveRoom(failedRoom);
+  assert.match(server.db.lastError.message, /forced persistence failure/);
+
+  server.db.saveRoom({
+    id: 'OK0001',
+    state: { videoId: VIDEO_B, currentTime: 0, isPlaying: false },
+  });
+  assert.match(server.db.lastError.message, /forced persistence failure/);
+  const healthUrl = `http://127.0.0.1:${server.httpServer.address().port}/api/health`;
+  assert.equal((await (await fetch(healthUrl)).json()).persistenceDegraded, true);
+
+  server.db.db.exec('DROP TRIGGER reject_failed_room');
+  server.db.saveRoom(failedRoom);
+  assert.equal(server.db.lastError, null);
+  assert.equal((await (await fetch(healthUrl)).json()).persistenceDegraded, false);
+});
+
+test('stale playback retries are rate limited and recover with fresh state', async (t) => {
+  const server = createPartyServer({ serveClient: false, dbPath: ':memory:' });
+  await new Promise((resolve) => server.httpServer.listen(0, resolve));
+  const socket = client(`http://127.0.0.1:${server.httpServer.address().port}`, {
+    transports: ['websocket'],
+    forceNew: true,
+  });
+  t.after(async () => {
+    socket.close();
+    await server.close();
+  });
+  await once(socket, 'connect');
+  const room = await emit(socket, 'create_room', { username: 'RateLimitHost', videoId: VIDEO_A });
+
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const synchronized = once(socket, 'sync_state');
+    const rejected = once(socket, 'action_rejected');
+    socket.emit('playback', {
+      roomId: room.roomId,
+      type: 'play',
+      time: 4,
+      expectedRevision: 9,
+    });
+    assert.equal((await synchronized).revision, 0);
+    assert.match((await rejected).message, /Playback changed elsewhere/);
+  }
+
+  let unexpectedlySynchronized = false;
+  const observeSync = () => { unexpectedlySynchronized = true; };
+  socket.once('sync_state', observeSync);
+  const rateLimited = once(socket, 'action_rejected');
+  socket.emit('playback', {
+    roomId: room.roomId,
+    type: 'play',
+    time: 4,
+    expectedRevision: 9,
+  });
+  assert.match((await rateLimited).message, /used too quickly/);
+  await delay(60);
+  socket.off('sync_state', observeSync);
+  assert.equal(unexpectedlySynchronized, false);
+
+  await delay(2050);
+  const recoveredState = once(socket, 'sync_state');
+  const staleRejection = once(socket, 'action_rejected');
+  socket.emit('playback', {
+    roomId: room.roomId,
+    type: 'play',
+    time: 4,
+    expectedRevision: 9,
+  });
+  const latest = await recoveredState;
+  assert.equal(latest.revision, 0);
+  assert.match((await staleRejection).message, /Playback changed elsewhere/);
+
+  const acceptedState = once(socket, 'sync_state');
+  socket.emit('playback', {
+    roomId: room.roomId,
+    type: 'play',
+    time: 4,
+    expectedRevision: latest.revision,
+  });
+  assert.equal((await acceptedState).revision, 1);
+});
+
 test('metrics endpoint exposes aggregate counters without room or participant identifiers', async (t) => {
   const previousToken = process.env.METRICS_TOKEN;
   process.env.METRICS_TOKEN = 'test-metrics-token';

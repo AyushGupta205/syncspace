@@ -4,6 +4,8 @@
 **Target:** SyncSpace repository
 **Specification:** Full Stack Task 1 assignment PDF
 
+> **Historical snapshot:** The test counts, requirement findings, and outstanding actions below describe the validation run recorded when this report was created; they are not current deployment status. The latest browser attempt (2026-10-30) used a local Node server and two browser pages. The real Big Buck Bunny YouTube IFrame loaded, but Chrome 150 reported `HTML5 player error` / `html5.missingapi`, so native media playback was not verified. The pages observed synchronized custom Play/Pause room status only, which does not prove media playback. E2E tests mock the IFrame API. Current code enables native player controls for Host/Moderator, disables Participant iframe pointer interaction, queues authorized native Play/Pause with custom playback, and does not synchronize native seek-bar gestures. The historical claim that the README lacked a public URL is superseded: it now lists the live application and canonical repository URLs. This does not verify the current Render deployment or identify its deployed commit.
+
 ## Summary
 
 | Step | Status | Exit code | Evidence |
@@ -25,15 +27,15 @@
 | Join by code/invite link; joiner defaults to Participant | PASS | Integration and browser test join using `?room=...`; participant role checked. |
 | Show participants and roles | PASS | Browser test observes roster and role updates; join/leave integration events are tested. |
 | YouTube iframe integration and video changes | PARTIAL | Browser test stubs the iframe API and verifies synchronized video ID/player instance. Actual YouTube API, network behavior, embedding restrictions, and playback are not exercised. |
-| Play/pause synchronization | PASS (server/socket) | Integration test exercises authorized play and pause broadcasts. Actual YouTube playback synchronization is not measured. |
+| Play/pause synchronization | PASS (server/socket) | Integration test exercises authorized play and pause broadcasts. The latest two-page local attempt observed custom Play/Pause room-status synchronization, but actual YouTube playback synchronization is not verified. |
 | Seek synchronization | PASS (server/socket) | Integration test covers seek event/state; browser drift accuracy is not measured. |
-| Host/Moderator-only playback and video changes | PASS (application controls) | Backend rejects direct Participant mutations; Playwright verifies YouTube native controls are disabled and the Participant iframe has no pointer interaction. Hosts/Moderators use synchronized application controls. Actual third-party playback was not exercised. |
+| Host/Moderator-only playback and video changes | PASS (authorization; media unverified) | Backend rejects direct Participant mutations. Current code enables native controls for Hosts/Moderators and disables Participant iframe pointer interaction; authorized native Play/Pause is queued with custom playback. Native seek-bar gestures are not synchronized. Historical E2E coverage mocks the IFrame API and does not verify third-party playback. |
 | Host-only role assignment and participant removal | PASS (backend) | Integration test verifies role authorization and removal. |
 | Host transfer | PASS | Integration and browser test cover transfer; the browser test confirms the former host resumes as Moderator. |
 | Chat/reactions | PASS (server integration) | Integration tests cover chat broadcast/rate limiting and valid/invalid reactions. Browser presentation/XSS rendering is not separately asserted. |
 | Participant approval request before changes take effect | PASS (server/browser stub) | Participants can request play, pause, seek, or video changes; requests are validated, rate-limited, visible only to connected Host/Moderators, expire after two minutes, and only apply after approval. Socket integration and Playwright flows pass. |
 | Persistence/recovery | PASS (local SQLite) | Integration test writes room state, restarts the server, reads it back, and resumes the host session. This is not a shared database. |
-| Publicly deployed app and live URL in README | NOT MET | Only local `http://localhost:5173/` was available. README contains a generic Render URL example, not a deployed application URL. |
+| Publicly deployed app and live URL in README | NOT MET (historical finding) | At the time of this report's recorded run, only local `http://localhost:5173/` was available and the README was reported to lack a public application URL. Superseded: the README now lists the live application URL and canonical repository URL. This does not establish current deployment health or deployed commit. |
 | Multi-instance / Redis scalability bonus | NOT IMPLEMENTED | Room ownership and authorization state remain in process-local maps; Redis adapter/shared state are described as future work. |
 
 ## Local Load Evidence
@@ -66,7 +68,7 @@ Temporary verification database files were removed after the process stopped.
 
 ## Outstanding Items
 
-1. Deploy to Render and add the actual public application URL to the README; verify health and all core flows on that URL.
+1. Historical action: deploy to Render and add the public application URL to the README. Superseded as to README documentation—the URL is now listed. Current live health, core flows, and deployed commit remain unverified by this report.
 2. Implement shared room/participant state and cross-instance Socket.IO fanout before running multiple instances. A Socket.IO adapter alone is insufficient while room maps remain local.
 3. Use durable/shared storage for production recovery and coordinate rate limits/connection policy across instances.
 4. Add an end-to-end test against a real YouTube embed in a suitable environment and measure playback drift; retain the stub test for deterministic CI.

@@ -5,6 +5,8 @@
 **Live deployment:** https://syncspace-watch-party-0335.onrender.com
 **Scope:** Local source and configuration review, isolated automated validation, local concurrency test, and live HTTP/browser checks. A follow-up local-only session recovery fix is documented below; Render settings were not changed and no deployment was triggered.
 
+> **Historical audit / current validation update (2026-10-30):** Findings below preserve the original audit snapshot and should not be read as current deployment status. The repository commit in the header identifies the source snapshot reviewed, not a verified Render deployment commit. In a later attempt against a local Node server, two browser pages loaded the real Big Buck Bunny YouTube IFrame, but Chrome 150 reported `HTML5 player error` / `html5.missingapi`; native media playback could not be verified. The pages observed synchronized custom Play/Pause room status only, not actual playback. E2E tests mock the IFrame API. Current code enables native controls for Hosts/Moderators, disables Participant iframe pointer interaction, queues authorized native Play/Pause alongside custom playback, and does not synchronize native seek-bar gestures.
+
 > **Follow-up:** The refresh failure described below was observed against the live deployment during the initial audit. The race has since been fixed in the local source and covered by automated regressions. The live deployment was not changed or retested with the patch, so the deployed version must still be considered affected until a separately authorized deployment and live verification.
 
 ## 1. Executive summary
@@ -57,7 +59,7 @@ The two live sessions demonstrated:
 - Host transfer updated the roles in both sessions. The new host could transfer ownership back.
 - Host removal returned the removed participant to the landing page with a removal notice.
 
-The live YouTube iframe loaded a real video's title in both sessions. When playback was attempted, the audit browser reported an HTML5 player error / missing codec capability, and the iframe displayed a playback error. The room's status still changed to PLAYING and PAUSED across sessions. Therefore:
+At the time of the original live audit, the YouTube iframe loaded a real video's title in both sessions. When playback was attempted, that audit browser reported an HTML5 player error / missing codec capability, and the iframe displayed a playback error. The room's status still changed to PLAYING and PAUSED across sessions. Therefore:
 
 - **Application state synchronization:** observed for play/pause state changes.
 - **Actual synchronized media playback, seeking accuracy, and drift correction:** not verified. The audit environment could not play the embedded media, so the UI state is not evidence that both clients watched the video in sync.

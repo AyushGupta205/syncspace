@@ -111,6 +111,114 @@ const stubPlayer = (readyDelay = 250) => {
   };
 };
 
+test('stale playback acknowledgements cannot alter the reconnected queue or revision', async ({ page, baseURL }) => {
+  await page.addInitScript(stubPlayer);
+  await page.goto(baseURL);
+  await page.evaluate(async () => {
+    const { mountRoomHarness } = await import('/e2e/room-harness.jsx');
+    window.__roomHarness = mountRoomHarness();
+  });
+  await expect(page.locator('#room-harness .youtube-player iframe')).toHaveCount(1);
+  await expect(page.locator('#room-harness .player-loading-overlay')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Play synchronized playback' }).last().click();
+  await expect.poll(() => page.evaluate(() => window.__roomHarness.playbackAcks.length)).toBe(1);
+  await page.evaluate(() => {
+    const harness = window.__roomHarness;
+    harness.socket.setConnected(false);
+    harness.socket.setConnected(true);
+    harness.socket.dispatch('sync_state', {
+      videoId: 'dQw4w9WgXcQ',
+      currentTime: 0,
+      isPlaying: false,
+      revision: 11,
+    });
+    harness.acknowledge(0, { state: { revision: 99 } });
+    window.__youtubePlayers.at(-1).nativePlay();
+  });
+  await expect.poll(() => page.evaluate(() => window.__roomHarness.playbackAcks.length)).toBe(2);
+  expect(await page.evaluate(() => window.__roomHarness.playbackAcks[1].data.expectedRevision))
+    .toBe(11);
+
+  await page.evaluate(() => {
+    const harness = window.__roomHarness;
+    harness.socket.setConnected(false);
+    harness.socket.setConnected(true);
+    harness.socket.dispatch('sync_state', {
+      videoId: 'dQw4w9WgXcQ',
+      currentTime: 0,
+      isPlaying: false,
+      revision: 12,
+    });
+  });
+  await page.getByRole('button', { name: 'Play synchronized playback' }).last().click();
+  await page.getByRole('button', { name: 'Forward 10 seconds' }).last().click();
+  await expect.poll(() => page.evaluate(() => window.__roomHarness.playbackAcks.length)).toBe(3);
+
+  await page.evaluate(() => {
+    window.__roomHarness.acknowledge(1, { error: 'stale connection failure' });
+  });
+  await expect(page.locator('#room-harness [role="alert"]')).toHaveCount(0);
+  await page.evaluate(() => {
+    window.__roomHarness.acknowledge(2, { state: { revision: 13 } });
+  });
+  await expect.poll(() => page.evaluate(() => window.__roomHarness.playbackAcks.length)).toBe(4);
+  expect(await page.evaluate(() => window.__roomHarness.playbackAcks[3].data.type)).toBe('seek');
+
+  await page.evaluate(() => window.__roomHarness.cleanup());
+});
+
+test('a disconnect cancels the 400ms connected-status transition', async ({ page, baseURL }) => {
+  await page.addInitScript(stubPlayer);
+  await page.goto(baseURL);
+  await page.evaluate(async () => {
+    const { mountRoomHarness } = await import('/e2e/room-harness.jsx');
+    window.__roomHarness = mountRoomHarness();
+  });
+  const status = page.locator('#room-harness .sync-status-label');
+  await expect(page.locator('#room-harness .youtube-player iframe')).toHaveCount(1);
+
+  await page.evaluate(() => window.__roomHarness.socket.dispatch('connect'));
+  await expect(status).toHaveText('Connected', { timeout: 200 });
+  await page.waitForTimeout(100);
+  await page.evaluate(() => window.__roomHarness.socket.setConnected(false));
+  await expect(status).toHaveText('Connection lost');
+  await page.waitForTimeout(450);
+  await expect(status).toHaveText('Connection lost');
+
+  await page.evaluate(() => window.__roomHarness.socket.setConnected(true));
+  await expect(status).toHaveText('Connected');
+  await expect(status).toHaveText('In sync', { timeout: 1000 });
+  await page.evaluate(() => window.__roomHarness.cleanup());
+});
+
+test('leave confirmation contains keyboard focus and restores the opener on Escape', async ({ page, baseURL }) => {
+  await page.addInitScript(stubPlayer);
+  await page.goto(baseURL);
+  await page.getByLabel(/Display name/).fill('DialogHost');
+  await page.getByLabel(/YouTube URL or Video ID/).fill(VIDEO_A);
+  await page.getByRole('button', { name: 'Start a Watch Party' }).click();
+  await expect(page.locator('.room-code-pill .code-string')).toBeVisible();
+
+  const leaveButton = page.getByRole('button', { name: 'Leave watch party' });
+  const stayButton = page.getByRole('button', { name: 'Stay in Room' });
+  const confirmButton = page.getByRole('button', { name: 'Yes, Leave Room' });
+  await leaveButton.click();
+  await expect(page.getByRole('dialog', { name: 'Leave Watch Party?' })).toBeVisible();
+  await expect(stayButton).toBeFocused();
+
+  await page.keyboard.press('Tab');
+  await expect(confirmButton).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(stayButton).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(confirmButton).toBeFocused();
+  await page.keyboard.press('Escape');
+
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(leaveButton).toBeFocused();
+});
+
 test('landing room-mode tabs and mobile layout stay usable', async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(baseURL);

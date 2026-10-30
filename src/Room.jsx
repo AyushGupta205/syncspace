@@ -31,11 +31,15 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
   const [videoInput, setVideoInput] = useState(
     initial.state.videoId ? `https://www.youtube.com/watch?v=${initial.state.videoId}` : ''
   );
+  const leaveButtonRef = useRef(null);
+  const leaveDialogRef = useRef(null);
+  const leaveDialogWasOpenRef = useRef(false);
 
   // Accurate connection and synchronization status tracking
   const [syncStatus, setSyncStatus] = useState(() => (socket?.connected ? 'in_sync' : 'connecting'));
   const messagesEndRef = useRef(null);
   const syncTimeoutRef = useRef(null);
+  const connectionGenerationRef = useRef(0);
   const playerRef = useRef(null);
   const reconcilePlayerRef = useRef(null);
   const stateAnchorRef = useRef({ receivedAt: Date.now() });
@@ -72,6 +76,16 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
     setActualPlaying(state.isPlaying);
   }, [state.isPlaying]);
 
+  useEffect(() => {
+    if (showLeaveModal) {
+      leaveDialogWasOpenRef.current = true;
+      leaveDialogRef.current?.querySelector('button:not([disabled])')?.focus();
+    } else if (leaveDialogWasOpenRef.current) {
+      leaveDialogWasOpenRef.current = false;
+      leaveButtonRef.current?.focus();
+    }
+  }, [showLeaveModal]);
+
   const isVideoPlaying = actualPlaying ?? state.isPlaying;
 
   // Sync scrubber current time with player tick
@@ -95,14 +109,19 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
     if (!socket) return;
 
     const onConnect = () => {
+      const generation = ++connectionGenerationRef.current;
       setSyncStatus('connected');
       clearTimeout(syncTimeoutRef.current);
       syncTimeoutRef.current = setTimeout(() => {
-        setSyncStatus('in_sync');
+        if (socket.connected && connectionGenerationRef.current === generation) {
+          setSyncStatus('in_sync');
+        }
       }, 400);
     };
 
     const onDisconnect = () => {
+      connectionGenerationRef.current += 1;
+      clearTimeout(syncTimeoutRef.current);
       setSyncStatus('connection_lost');
       playbackQueueRef.current = [];
       playbackInFlightRef.current = false;
@@ -321,6 +340,7 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
 
     const action = playbackQueueRef.current.shift();
     playbackInFlightRef.current = true;
+    const generation = connectionGenerationRef.current;
     const { native, ...playbackAction } = action;
     socket.emit(
       'playback',
@@ -330,6 +350,7 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
         ...(native ? { expectedRevision: playbackRevisionRef.current } : {}),
       },
       (result) => {
+        if (generation !== connectionGenerationRef.current) return;
         playbackInFlightRef.current = false;
         if (result?.error) {
           playbackQueueRef.current = [];
@@ -458,6 +479,32 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
     setText('');
   };
 
+  const handleLeaveDialogKeyDown = (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setShowLeaveModal(false);
+      return;
+    }
+    if (event.key !== 'Tab') return;
+
+    const dialog = leaveDialogRef.current;
+    const buttons = Array.from(dialog?.querySelectorAll('button:not([disabled])') || []);
+    const first = buttons[0];
+    const last = buttons[buttons.length - 1];
+    if (!first || !last) return;
+
+    if (!dialog.contains(document.activeElement)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
   const copy = () => {
     const url = `${window.location.origin}?room=${initial.roomId}`;
     navigator.clipboard?.writeText(url).then(() => {
@@ -533,6 +580,7 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
           </div>
           <div className="header-slot-divider" aria-hidden="true"></div>
           <button
+            ref={leaveButtonRef}
             type="button"
             className="leave-room-btn"
             onClick={() => setShowLeaveModal(true)}
@@ -546,7 +594,14 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
 
       {/* Leave Room Confirmation Dialog */}
       {showLeaveModal && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="leave-modal-title">
+        <div
+          ref={leaveDialogRef}
+          className="modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="leave-modal-title"
+          onKeyDown={handleLeaveDialogKeyDown}
+        >
           <div className="modal-dialog">
             <div className="modal-header">
               <span className="modal-warning-icon" aria-hidden="true">🚪</span>

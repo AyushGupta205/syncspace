@@ -11,8 +11,27 @@ export class DatabaseService {
     this.dbPath = dbPath;
     this.allowMemoryFallback = allowMemoryFallback;
     this.db = null;
-    this.lastError = null;
+    this.persistenceErrors = new Map();
     this.init();
+  }
+
+  get lastError() {
+    const errors = [...this.persistenceErrors.values()];
+    return errors.length ? errors[errors.length - 1].error : null;
+  }
+
+  recordPersistenceError(key, error, details = {}) {
+    this.persistenceErrors.set(key, { error, ...details });
+  }
+
+  clearPersistenceError(key) {
+    this.persistenceErrors.delete(key);
+  }
+
+  clearRoomPersistenceErrors(roomId) {
+    for (const [key, details] of this.persistenceErrors) {
+      if (details.roomId === roomId) this.persistenceErrors.delete(key);
+    }
   }
 
   init() {
@@ -55,7 +74,7 @@ export class DatabaseService {
       }
       this.db.exec('CREATE INDEX IF NOT EXISTS idx_participants_room_joined ON participants(room_id, joined_at)');
     } catch (err) {
-      this.lastError = err;
+      this.recordPersistenceError('database', err);
       if (!this.allowMemoryFallback) {
         throw new Error('SQLite persistence is required but could not be initialized.', { cause: err });
       }
@@ -85,9 +104,9 @@ export class DatabaseService {
         room.createdAt || Date.now(),
         state.updatedAt || Date.now()
       );
-      this.lastError = null;
+      this.clearPersistenceError(`room:${room.id}`);
     } catch (err) {
-      this.lastError = err;
+      this.recordPersistenceError(`room:${room.id}`, err);
       logEvent('error', 'sqlite_save_room_failed', { message: err?.message });
     }
   }
@@ -115,9 +134,9 @@ export class DatabaseService {
         participant.connected ? 1 : 0,
         participant.disconnectedAt || null
       );
-      this.lastError = null;
+      this.clearPersistenceError(`participant:${participant.id}`);
     } catch (err) {
-      this.lastError = err;
+      this.recordPersistenceError(`participant:${participant.id}`, err, { roomId });
       logEvent('error', 'sqlite_save_participant_failed', { message: err?.message });
     }
   }
@@ -126,9 +145,9 @@ export class DatabaseService {
     if (!this.db) return;
     try {
       this.db.prepare('DELETE FROM participants WHERE id = ?').run(participantId);
-      this.lastError = null;
+      this.clearPersistenceError(`participant:${participantId}`);
     } catch (err) {
-      this.lastError = err;
+      this.recordPersistenceError(`participant:${participantId}`, err);
       logEvent('error', 'sqlite_remove_participant_failed', { message: err?.message });
     }
   }
@@ -137,9 +156,10 @@ export class DatabaseService {
     if (!this.db) return;
     try {
       this.db.prepare('DELETE FROM rooms WHERE id = ?').run(roomId);
-      this.lastError = null;
+      this.clearPersistenceError(`room:${roomId}`);
+      this.clearRoomPersistenceErrors(roomId);
     } catch (err) {
-      this.lastError = err;
+      this.recordPersistenceError(`room:${roomId}`, err);
       logEvent('error', 'sqlite_delete_room_failed', { message: err?.message });
     }
   }
@@ -148,6 +168,7 @@ export class DatabaseService {
     if (!this.db) return [];
     try {
       const rooms = this.db.prepare('SELECT * FROM rooms').all();
+      this.clearPersistenceError('loadAllRooms');
       return rooms.map((r) => {
         const parts = this.db.prepare(
           'SELECT * FROM participants WHERE room_id = ? ORDER BY joined_at ASC, rowid ASC'
@@ -171,7 +192,7 @@ export class DatabaseService {
         };
       });
     } catch (err) {
-      this.lastError = err;
+      this.recordPersistenceError('loadAllRooms', err);
       logEvent('error', 'sqlite_load_rooms_failed', { message: err?.message });
       return [];
     }

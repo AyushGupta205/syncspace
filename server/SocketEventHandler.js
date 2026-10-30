@@ -200,6 +200,13 @@ export class SocketEventHandler {
     if (!room.hasControl(socket.id)) {
       return this.reject(socket, 'Only a host or moderator can control playback.', reply);
     }
+    if (!this.messageHandler.checkRateLimit(socket.id, {
+      event: 'playback',
+      maxPerWindow: 20,
+      windowMs: 2000,
+    })) {
+      return this.reject(socket, 'Playback controls are being used too quickly.', reply);
+    }
     if (data.expectedRevision !== undefined) {
       const currentState = room.getState();
       if (
@@ -209,13 +216,6 @@ export class SocketEventHandler {
         socket.emit('sync_state', currentState);
         return this.reject(socket, 'Playback changed elsewhere. The latest room state was restored.', reply);
       }
-    }
-    if (!this.messageHandler.checkRateLimit(socket.id, {
-      event: 'playback',
-      maxPerWindow: 20,
-      windowMs: 2000,
-    })) {
-      return this.reject(socket, 'Playback controls are being used too quickly.', reply);
     }
     if (!['play', 'pause', 'seek', 'video'].includes(data.type)) {
       return this.reject(socket, 'Unknown playback action.', reply);

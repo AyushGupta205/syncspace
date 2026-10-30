@@ -20,7 +20,7 @@ Since the IFrame API does not expose callback origin or a command identifier, ca
 
 A delayed or stale callback cannot create a new room command, regardless of how late it arrives; if the actual player is out of sync, it is driven back toward the current room state. Video changes continue using the existing pending-load and stale-video guards.
 
-Hosts and Moderators make shared Play/Pause/Seek/Change Video changes through the existing application controls, which are validated by the server. Participants remain watch-only. Native YouTube player controls remain available for captions, fullscreen, and other YouTube features; native Play/Pause/seek gestures are local observations and are reconciled back to the shared state rather than being broadcast.
+Hosts and Moderators can use native YouTube Play/Pause controls; authorized native intents are queued with custom playback actions and validated by the server. SyncSpace controls provide synchronized seeking and video changes. Native seek-bar gestures are not synchronized. Participant iframe pointer interaction remains disabled. Native controls are also available for YouTube features such as captions and fullscreen.
 
 Host transfer itself continues to preserve the room's video, position, and play/pause state. The former Host remains a Moderator, and the existing host-succession behavior remains unchanged.
 
@@ -35,7 +35,7 @@ The browser tests use a mocked YouTube IFrame player. These results do **not** v
 
 ## Remaining Limitations
 
-Browsers may block unmuted autoplay initiated by a remote user action; the app cannot bypass browser autoplay policies. Because the YouTube API does not report callback origin, direct Play/Pause/seek actions within the native player are not accepted as shared controls; Hosts and Moderators must use the app's synchronized controls. Actual YouTube playback and behavior across specific browsers/devices remain to be tested manually.
+Browsers may block unmuted autoplay initiated by a remote user action; the app cannot bypass browser autoplay policies. Because the YouTube API does not report callback origin, native Play/Pause is queued as an authorized intent and reconciled against room state; native seek-bar gestures are not accepted as shared seeks. Actual YouTube playback and behavior across specific browsers/devices remain to be verified. In the latest attempt (2026-10-30), two pages on a local Node server loaded the real Big Buck Bunny IFrame, but Chrome 150 reported `HTML5 player error` / `html5.missingapi`. Custom Play/Pause room status synchronized, but actual media playback could not be verified. E2E tests mock the IFrame API.
 
 ## Manual Live Testing
 
