@@ -193,9 +193,14 @@ npm run load-test -- 100
 - **Unit/integration tests (`npm test`):** Node's test runner covers server/socket behavior, persistence and recovery, role enforcement, playback revisions, validation, and URL parsing.
 - **Browser E2E (`npm run test:e2e`):** Playwright starts isolated server/client processes and mocks the YouTube IFrame API. These tests cover browser flows such as roles, requests, playback synchronization, video changes, and session recovery; they do not prove behavior against YouTube's real player.
 - **Load check (`npm run load-test -- 100`):** Simulates the requested number of Socket.IO participants (1–1,000) against a local in-memory server and reports join and playback-broadcast latency. Results are not production capacity guarantees.
-- **Real-browser playback:** The latest attempt (2026-10-30) used the public Render application and two browser sessions. Both joined the same room and the real YouTube IFrame loaded, but Chrome 150 reported `html5.missingapi` / `nocodecs.1`; actual media playback and native YouTube controls could not be verified. Room membership and synchronized status are not proof of media playback. This is separate from the mocked E2E suite and is not performed by the commands above.
+- **Real-browser playback and verification distinctions:**
+  - **Render deployment and asset delivery:** Confirmed live on Render serving `index-C2KG0g2Y.js` and `index-DKSWS5LP.css` built from commit `8c015fee3df78806e57db755f299b537b7ecccdf`.
+  - **Two-session room creation, joining, and permissions:** Confirmed in automated tests and live sessions. Creators become Host; joiners default to Participant. Server-side RBAC enforces that only Hosts and Moderators control playback directly, while Participants must submit playback requests for Host/Moderator approval.
+  - **Application-state synchronization:** Confirmed at the application layer across sessions for room status: shared Play/Pause state, monotonically increasing revisions, video changes preserving play/pause state, and request approval workflows.
+  - **Shared seeking through SyncSpace timeline slider:** Confirmed in automated E2E tests (`e2e/room-sync.spec.js`), verifying slider scrubbing and ±10-second button adjustments update the room timeline and broadcast server-validated revisions.
+  - **Actual YouTube media playback in real browsers (REMAINS UNVERIFIED):** In the previous real-browser attempt on Chrome 150, the third-party iframe loaded the selected video title, but the HTML5 player reported `html5.missingapi` / `nocodecs.1`; actual video decoding, audio rendering, and native media playback could not be verified. Room membership, UI updates, and synchronized status do not constitute proof of actual media playback. Automated Playwright E2E tests mock the YouTube IFrame API for deterministic CI and do not connect to real YouTube video streams. Conclusive synchronized media playback in a real browser environment with working native video codecs remains explicitly unverified.
 
-Latest validation in this audit: `npm ci` completed with no reported dependency vulnerabilities; `npm test` passed 14/14; `npm run build` passed; `npm run test:e2e` passed 8/8; `npm run load-test -- 100` joined all 100 simulated clients; and `git diff --check` passed. The E2E suite mocks the YouTube IFrame API. The latest real-browser attempt did not verify native media playback.
+Latest validation in this audit: `npm ci` completed with no reported dependency vulnerabilities; `npm test` passed 14/14; `npm run build` passed; `npm run test:e2e` passed 8/8; `npm run load-test -- 100` joined all 100 simulated clients; and `git diff --check` passed. The E2E suite mocks the YouTube IFrame API. Real-browser native media playback remains unverified.
 
 The GitHub Actions workflow runs dependency installation, Playwright browser installation, unit/integration tests, E2E tests, a 250-client load check, and the production build on pushes and pull requests.
 
@@ -221,6 +226,16 @@ SyncSpace requires a long-running Node.js web service for Socket.IO. The reposit
 - `DB_PATH` is set to `data/syncspace.db`; `CLIENT_ORIGIN` is available for configuration.
 
 The current live application is [https://syncspace-watch-party-0335.onrender.com/](https://syncspace-watch-party-0335.onrender.com/).
+
+### Confirmed deployment status
+
+- **Platform:** Render
+- **Status:** Deploy succeeded — Live
+- **Verified commit:** `8c015fee3df78806e57db755f299b537b7ecccdf`
+- **Frontend JavaScript asset:** `index-C2KG0g2Y.js`
+- **Frontend CSS asset:** `index-DKSWS5LP.css`
+- **Production build:** Completed successfully (`npm ci --include=dev && npm run build`)
+- **Health check:** Verified at `/api/health` returning HTTP 200 (`ok: true`, `persistence: "sqlite"`, `persistenceDegraded: false`).
 
 **Render Free-tier note:** Free web services may spin down after inactivity and have cold starts. Their filesystem is ephemeral, so SQLite data can be lost when the service restarts, sleeps, or is redeployed. Use durable storage or an external database when room/session persistence across such events is required.
 
