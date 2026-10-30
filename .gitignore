@@ -5,6 +5,8 @@ scratch/
 data/*.db
 data/*.db-wal
 data/*.db-shm
+test-results/
+playwright-report/
 .env
 .env.*
 !.env.example

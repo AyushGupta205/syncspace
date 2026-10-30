@@ -5,6 +5,7 @@ export class Participant {
     role = 'participant',
     socketId = null,
     sessionToken,
+    joinedAt = Date.now(),
     connected = true,
     disconnectedAt = null,
   }) {
@@ -13,6 +14,7 @@ export class Participant {
     this.role = role;
     this.socketId = socketId;
     this.sessionToken = sessionToken;
+    this.joinedAt = joinedAt;
     this.connected = connected;
     this.disconnectedAt = disconnectedAt;
   }
@@ -38,6 +40,7 @@ export class Participant {
       id: this.id,
       username: this.username,
       role: this.role,
+      joinedAt: this.joinedAt,
       connected: this.connected,
     };
     if (includePrivate) {

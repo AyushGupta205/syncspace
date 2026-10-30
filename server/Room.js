@@ -16,15 +16,15 @@ export class Room {
       isPlaying,
       playState: isPlaying ? 'PLAYING' : 'PAUSED',
       updatedAt: Date.now(),
+      revision: 0,
     };
   }
 
   addParticipant(socketId, username) {
-    const role = this.participants.size === 0 ? 'host' : 'participant';
     const participant = new Participant({
       id: randomUUID(),
       username,
-      role,
+      role: 'participant',
       socketId,
       sessionToken: randomUUID(),
       connected: true,
@@ -33,6 +33,7 @@ export class Room {
 
     this.participants.set(participant.id, participant);
     if (socketId) this.socketIndex.set(socketId, participant.id);
+    this.ensureHost();
     this.db?.saveParticipant(this.id, participant);
     return participant;
   }
@@ -60,6 +61,7 @@ export class Room {
 
     participant.setConnected(socketId);
     this.socketIndex.set(socketId, participant.id);
+    this.ensureHost();
     this.db?.saveParticipant(this.id, participant);
     return participant;
   }
@@ -69,6 +71,7 @@ export class Room {
     if (!participant) return null;
     this.socketIndex.delete(socketId);
     participant.setDisconnected();
+    this.ensureHost();
     this.db?.saveParticipant(this.id, participant);
     return participant;
   }
@@ -81,6 +84,7 @@ export class Room {
       if (id === participantId) this.socketIndex.delete(socketId);
     }
     this.db?.removeParticipant(participantId);
+    this.ensureHost();
     return participant;
   }
 
@@ -109,10 +113,37 @@ export class Room {
     return this.getParticipant(socketId)?.role === 'host';
   }
 
+  ensureHost() {
+    const connectedHost = [...this.participants.values()].find(
+      (member) => member.role === 'host' && member.connected
+    );
+    if (connectedHost) return connectedHost;
+
+    const candidates = [...this.participants.values()]
+      .filter((member) => member.role !== 'host')
+      .sort((a, b) => a.joinedAt - b.joinedAt);
+    const nextHost =
+      candidates.find((member) => member.connected && member.role === 'moderator') ||
+      candidates.find((member) => member.connected) ||
+      candidates.find((member) => member.role === 'moderator') ||
+      candidates[0];
+    if (!nextHost) return null;
+
+    for (const member of this.participants.values()) {
+      if (member.role === 'host') {
+        member.role = 'participant';
+        this.db?.saveParticipant(this.id, member);
+      }
+    }
+    nextHost.role = 'host';
+    this.db?.saveParticipant(this.id, nextHost);
+    return nextHost;
+  }
+
   transferHost(targetParticipantId) {
     const currentHost = [...this.participants.values()].find((member) => member.role === 'host');
     const target = this.participants.get(targetParticipantId);
-    if (!currentHost || !target || currentHost.id === target.id) return false;
+    if (!currentHost || !target || !target.connected || currentHost.id === target.id) return false;
 
     currentHost.role = 'moderator';
     target.role = 'host';
@@ -123,7 +154,9 @@ export class Room {
 
   assignRole(targetParticipantId, newRole) {
     const member = this.participants.get(targetParticipantId);
-    if (!member || !['moderator', 'participant'].includes(newRole)) return false;
+    if (!member || member.role === 'host' || !['moderator', 'participant'].includes(newRole)) {
+      return false;
+    }
     member.role = newRole;
     this.db?.saveParticipant(this.id, member);
     return true;
@@ -141,21 +174,27 @@ export class Room {
   }
 
   getState() {
+    const currentTime = this.state.currentTime + (
+      this.state.isPlaying ? Math.max(0, Date.now() - this.state.updatedAt) / 1000 : 0
+    );
     return {
       ...this.state,
+      currentTime,
       playState: this.state.isPlaying ? 'PLAYING' : 'PAUSED',
     };
   }
 
   setState(update) {
+    const currentState = this.getState();
     const isPlaying =
-      update.isPlaying !== undefined ? Boolean(update.isPlaying) : this.state.isPlaying;
+      update.isPlaying !== undefined ? Boolean(update.isPlaying) : currentState.isPlaying;
     this.state = {
-      ...this.state,
+      ...currentState,
       ...update,
       isPlaying,
       playState: isPlaying ? 'PLAYING' : 'PAUSED',
       updatedAt: Date.now(),
+      revision: currentState.revision + 1,
     };
     this.db?.saveRoom(this);
     return this.getState();

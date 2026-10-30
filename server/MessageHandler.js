@@ -1,3 +1,5 @@
+const ALLOWED_REACTIONS = new Set(['🔥', '❤️', '😂', '👏', '🎉', '😮']);
+
 export class MessageHandler {
   constructor({ maxLen = 500, maxPerWindow = 5, windowMs = 2000 } = {}) {
     this.maxLen = maxLen;
@@ -6,15 +8,22 @@ export class MessageHandler {
     this.rateMap = new Map(); // socketId -> array of timestamps
   }
 
-  checkRateLimit(socketId, now = Date.now()) {
-    let timestamps = this.rateMap.get(socketId) || [];
-    timestamps = timestamps.filter((t) => now - t < this.windowMs);
-    if (timestamps.length >= this.maxPerWindow) {
-      this.rateMap.set(socketId, timestamps);
+  checkRateLimit(
+    socketId,
+    { event = 'chat', maxPerWindow = this.maxPerWindow, windowMs = this.windowMs, now = Date.now() } = {}
+  ) {
+    let socketLimits = this.rateMap.get(socketId);
+    if (!socketLimits) {
+      socketLimits = new Map();
+      this.rateMap.set(socketId, socketLimits);
+    }
+    const timestamps = (socketLimits.get(event) || []).filter((t) => now - t < windowMs);
+    if (timestamps.length >= maxPerWindow) {
+      socketLimits.set(event, timestamps);
       return false;
     }
     timestamps.push(now);
-    this.rateMap.set(socketId, timestamps);
+    socketLimits.set(event, timestamps);
     return true;
   }
 
@@ -44,9 +53,8 @@ export class MessageHandler {
   }
 
   createReaction({ socketId, username, emoji }) {
-    if (!emoji || typeof emoji !== 'string') return null;
-    const cleanEmoji = emoji.trim().slice(0, 8);
-    if (!cleanEmoji) return null;
+    if (typeof emoji !== 'string' || !ALLOWED_REACTIONS.has(emoji)) return null;
+    const cleanEmoji = emoji;
     const now = Date.now();
     return {
       id: `rx-${socketId}-${now}-${Math.random().toString(36).slice(2, 6)}`,

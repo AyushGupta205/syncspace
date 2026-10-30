@@ -1,22 +1,36 @@
+import { randomInt } from 'node:crypto';
 import { Room } from './Room.js';
+import { logEvent } from './logger.js';
+
+const ROOM_CODE_CHARACTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 
 export class RoomManager {
-  constructor({ db = null } = {}) {
+  constructor({
+    db = null,
+    maxRooms = Number(process.env.MAX_ROOMS) || 500,
+    maxParticipants = Number(process.env.MAX_PARTICIPANTS_PER_ROOM) || 100,
+  } = {}) {
     this.rooms = new Map(); // roomId -> Room
     this.db = db;
+    this.maxRooms = maxRooms;
+    this.maxParticipants = maxParticipants;
     this.createRateMap = new Map(); // ip or socketId -> timestamps
+    this.joinRateMap = new Map();
     this.restoreFromDb();
   }
 
   generateCode() {
     let id;
     do {
-      id = Math.random().toString(36).slice(2, 8).toUpperCase();
+      id = Array.from({ length: 6 }, () =>
+        ROOM_CODE_CHARACTERS[randomInt(ROOM_CODE_CHARACTERS.length)]
+      ).join('');
     } while (this.rooms.has(id));
     return id;
   }
 
   createRoom(videoId = '') {
+    if (this.rooms.size >= this.maxRooms) return null;
     const id = this.generateCode();
     const room = new Room(id, videoId, { db: this.db });
     this.rooms.set(id, room);
@@ -35,6 +49,7 @@ export class RoomManager {
   }
 
   prune(io) {
+    this.cleanupCreateRateMap();
     for (const [roomId, room] of this.rooms) {
       const changed = room.pruneDisconnected();
       if (!room.participants.size) {
@@ -67,22 +82,40 @@ export class RoomManager {
         }
       }
       if (savedRooms.length > 0) {
-        console.log(`[SyncSpace DB] Restored ${this.rooms.size} active room(s) from persistent storage.`);
+        logEvent('info', 'rooms_restored', { activeRooms: this.rooms.size });
       }
     } catch (err) {
-      console.error('[SyncSpace DB] Error restoring rooms:', err);
+      logEvent('error', 'room_restore_failed', { message: err?.message });
     }
   }
 
   checkCreateRateLimit(identifier, limit = 5, windowMs = 60000, now = Date.now()) {
-    let timestamps = this.createRateMap.get(identifier) || [];
-    timestamps = timestamps.filter((t) => now - t < windowMs);
+    return this.checkLimit(this.createRateMap, identifier, limit, windowMs, now);
+  }
+
+  checkJoinRateLimit(identifier, limit = 20, windowMs = 60000, now = Date.now()) {
+    return this.checkLimit(this.joinRateMap, identifier, limit, windowMs, now);
+  }
+
+  checkLimit(rateMap, identifier, limit, windowMs, now) {
+    if (!rateMap.has(identifier) && rateMap.size >= 10000) return false;
+    const timestamps = (rateMap.get(identifier) || []).filter((t) => now - t < windowMs);
     if (timestamps.length >= limit) {
-      this.createRateMap.set(identifier, timestamps);
+      rateMap.set(identifier, timestamps);
       return false;
     }
     timestamps.push(now);
-    this.createRateMap.set(identifier, timestamps);
+    rateMap.set(identifier, timestamps);
     return true;
+  }
+
+  cleanupCreateRateMap(now = Date.now(), windowMs = 60000) {
+    for (const rateMap of [this.createRateMap, this.joinRateMap]) {
+      for (const [identifier, timestamps] of rateMap) {
+        const recent = timestamps.filter((timestamp) => now - timestamp < windowMs);
+        if (recent.length) rateMap.set(identifier, recent);
+        else rateMap.delete(identifier);
+      }
+    }
   }
 }

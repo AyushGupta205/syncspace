@@ -1,11 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { logEvent } from './logger.js';
 
 export class DatabaseService {
-  constructor({ dbPath = process.env.DB_PATH || 'data/syncspace.db' } = {}) {
+  constructor({
+    dbPath = process.env.DB_PATH || 'data/syncspace.db',
+    allowMemoryFallback = process.env.NODE_ENV !== 'production',
+  } = {}) {
     this.dbPath = dbPath;
+    this.allowMemoryFallback = allowMemoryFallback;
     this.db = null;
+    this.lastError = null;
     this.init();
   }
 
@@ -36,13 +42,24 @@ export class DatabaseService {
           username TEXT,
           role TEXT,
           session_token TEXT,
+          joined_at INTEGER,
           connected INTEGER DEFAULT 0,
           disconnected_at INTEGER,
           FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE
         );
       `);
+      const participantColumns = this.db.prepare('PRAGMA table_info(participants)').all();
+      if (!participantColumns.some((column) => column.name === 'joined_at')) {
+        this.db.exec('ALTER TABLE participants ADD COLUMN joined_at INTEGER');
+        this.db.exec('UPDATE participants SET joined_at = 0 WHERE joined_at IS NULL');
+      }
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_participants_room_joined ON participants(room_id, joined_at)');
     } catch (err) {
-      console.warn('[SyncSpace DB] Warning: SQLite persistence unavailable, falling back to memory mode.', err?.message);
+      this.lastError = err;
+      if (!this.allowMemoryFallback) {
+        throw new Error('SQLite persistence is required but could not be initialized.', { cause: err });
+      }
+      logEvent('warn', 'sqlite_memory_fallback', { message: err?.message });
       this.db = null;
     }
   }
@@ -68,8 +85,10 @@ export class DatabaseService {
         room.createdAt || Date.now(),
         state.updatedAt || Date.now()
       );
+      this.lastError = null;
     } catch (err) {
-      console.error('[SyncSpace DB] Failed to save room:', err?.message);
+      this.lastError = err;
+      logEvent('error', 'sqlite_save_room_failed', { message: err?.message });
     }
   }
 
@@ -77,11 +96,12 @@ export class DatabaseService {
     if (!this.db) return;
     try {
       const stmt = this.db.prepare(`
-        INSERT INTO participants (id, room_id, username, role, session_token, connected, disconnected_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO participants (id, room_id, username, role, session_token, joined_at, connected, disconnected_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           username = excluded.username,
           role = excluded.role,
+          joined_at = excluded.joined_at,
           connected = excluded.connected,
           disconnected_at = excluded.disconnected_at
       `);
@@ -91,11 +111,14 @@ export class DatabaseService {
         participant.username,
         participant.role,
         participant.sessionToken,
+        participant.joinedAt ?? Date.now(),
         participant.connected ? 1 : 0,
         participant.disconnectedAt || null
       );
+      this.lastError = null;
     } catch (err) {
-      console.error('[SyncSpace DB] Failed to save participant:', err?.message);
+      this.lastError = err;
+      logEvent('error', 'sqlite_save_participant_failed', { message: err?.message });
     }
   }
 
@@ -103,18 +126,21 @@ export class DatabaseService {
     if (!this.db) return;
     try {
       this.db.prepare('DELETE FROM participants WHERE id = ?').run(participantId);
+      this.lastError = null;
     } catch (err) {
-      console.error('[SyncSpace DB] Failed to remove participant:', err?.message);
+      this.lastError = err;
+      logEvent('error', 'sqlite_remove_participant_failed', { message: err?.message });
     }
   }
 
   deleteRoom(roomId) {
     if (!this.db) return;
     try {
-      this.db.prepare('DELETE FROM participants WHERE room_id = ?').run(roomId);
       this.db.prepare('DELETE FROM rooms WHERE id = ?').run(roomId);
+      this.lastError = null;
     } catch (err) {
-      console.error('[SyncSpace DB] Failed to delete room:', err?.message);
+      this.lastError = err;
+      logEvent('error', 'sqlite_delete_room_failed', { message: err?.message });
     }
   }
 
@@ -123,7 +149,9 @@ export class DatabaseService {
     try {
       const rooms = this.db.prepare('SELECT * FROM rooms').all();
       return rooms.map((r) => {
-        const parts = this.db.prepare('SELECT * FROM participants WHERE room_id = ?').all(r.id);
+        const parts = this.db.prepare(
+          'SELECT * FROM participants WHERE room_id = ? ORDER BY joined_at ASC, rowid ASC'
+        ).all(r.id);
         return {
           id: r.id,
           videoId: r.video_id,
@@ -136,13 +164,15 @@ export class DatabaseService {
             username: p.username,
             role: p.role,
             sessionToken: p.session_token,
+            joinedAt: p.joined_at ?? p.disconnected_at ?? Date.now(),
             connected: false,
             disconnectedAt: p.disconnected_at || Date.now(),
           })),
         };
       });
     } catch (err) {
-      console.error('[SyncSpace DB] Failed to load rooms:', err?.message);
+      this.lastError = err;
+      logEvent('error', 'sqlite_load_rooms_failed', { message: err?.message });
       return [];
     }
   }
