@@ -1,5 +1,6 @@
 node_modules/
 dist/
+scratch/
 .npm-cache/
 data/*.db
 data/*.db-wal
