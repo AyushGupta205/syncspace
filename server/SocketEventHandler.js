@@ -272,10 +272,30 @@ export class SocketEventHandler {
     socket.on('resume_room', (rawData = {}, reply) => {
       const data = objectPayload(rawData);
       const room = this.roomManager.getRoom(data.roomId);
-      const member = room?.resumeParticipant(socket.id, String(data.sessionToken || ''));
-      if (!member) {
-        return reply?.({ error: 'Your previous room session has expired.' });
+      if (!room) {
+        return reply?.({
+          error: 'Your previous room session has expired.',
+          code: 'SESSION_EXPIRED',
+        });
       }
+      const resumed = room.resumeParticipant(socket.id, String(data.sessionToken || ''));
+      if (resumed.error) {
+        const expired = resumed.error === 'expired';
+        return reply?.({
+          error: expired
+            ? 'Your previous room session has expired.'
+            : 'Your previous room session is invalid.',
+          code: expired ? 'SESSION_EXPIRED' : 'SESSION_INVALID',
+        });
+      }
+
+      const { participant: member, previousSocketId } = resumed;
+      if (previousSocketId && previousSocketId !== socket.id) {
+        const previousSocket = this.io.sockets.sockets.get(previousSocketId);
+        previousSocket?.leave(room.id);
+        previousSocket?.disconnect(true);
+      }
+
       this.metrics?.increment('roomResumes');
       socket.join(room.id);
       const result = this.payload(room, member);

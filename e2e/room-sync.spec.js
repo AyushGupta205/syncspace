@@ -55,6 +55,7 @@ test('playback controls, role changes, and reconnection preserve the player inst
         constructor(element, options) {
           this.state = 2;
           this.time = 0;
+          window.__youtubePlayerCount = (window.__youtubePlayerCount || 0) + 1;
           window.__youtubePlayerVars = options.playerVars;
           this.iframe = document.createElement('iframe');
           this.iframe.title = 'Mock YouTube player';
@@ -95,7 +96,7 @@ test('playback controls, role changes, and reconnection preserve the player inst
     await hostPage.getByRole('button', { name: 'Start a Watch Party' }).click();
     await expect(hostPage.locator('.room-code-pill .code-string')).toBeVisible();
     await expect(hostPage.locator('.youtube-player iframe')).toHaveCount(1);
-    const originalIframe = await hostPage.locator('.youtube-player iframe').elementHandle();
+    const hostPlayerCount = await hostPage.evaluate(() => window.__youtubePlayerCount);
     const roomCode = await hostPage.locator('.room-code-pill .code-string').textContent();
 
     await guestPage.goto(`${baseURL}/?room=${roomCode}`);
@@ -116,22 +117,36 @@ test('playback controls, role changes, and reconnection preserve the player inst
     await expect(guestPage.locator('.request-status')).toContainText('Your request was approved.');
     await expect(hostPage.locator('.youtube-player iframe')).toHaveAttribute('data-video-id', VIDEO_B);
 
-    const guestIframe = await guestPage.locator('.youtube-player iframe').elementHandle();
+    await guestPage.reload();
+    await expect(guestPage.locator('.person-row').filter({ hasText: 'GuestUser' }).locator('.role-badge'))
+      .toHaveText('Participant');
+    await expect(hostPage.locator('.person-row').filter({ hasText: 'GuestUser' })).toHaveCount(1);
+    expect(await guestPage.evaluate(() => window.__youtubePlayerVars.controls)).toBe(0);
+    const guestPlayerCount = await guestPage.evaluate(() => window.__youtubePlayerCount);
+    expect(guestPlayerCount).toBeGreaterThan(0);
+
     await hostPage.locator('.person-row')
       .filter({ hasText: 'GuestUser' })
       .getByRole('button', { name: 'Make mod' })
       .click();
     await expect(guestPage.locator('.person-row').filter({ hasText: 'GuestUser' }).locator('.role-badge'))
       .toHaveText('Moderator');
-    expect(await guestIframe.evaluate((iframe) => iframe.isConnected)).toBe(true);
+    expect(await guestPage.evaluate(() => window.__youtubePlayerCount)).toBe(guestPlayerCount);
     await expect(guestPage.locator('.youtube-player iframe'))
       .toHaveCSS('pointer-events', 'auto');
+    await guestPage.reload();
+    await expect(guestPage.locator('.person-row').filter({ hasText: 'GuestUser' }).locator('.role-badge'))
+      .toHaveText('Moderator');
+    await expect(hostPage.locator('.person-row').filter({ hasText: 'GuestUser' })).toHaveCount(1);
+    await expect(guestPage.locator('.youtube-player iframe'))
+      .toHaveCSS('pointer-events', 'auto');
+    expect(await guestPage.evaluate(() => window.__youtubePlayerCount)).toBe(guestPlayerCount);
 
     await guestPage.getByRole('button', { name: 'Toggle change video input' }).click();
     await guestPage.getByPlaceholder(/Paste YouTube link/).fill(VIDEO_C);
     await guestPage.getByRole('button', { name: 'Load Video' }).click();
     await expect(hostPage.locator('.youtube-player iframe')).toHaveAttribute('data-video-id', VIDEO_C);
-    expect(await originalIframe.evaluate((iframe) => iframe.isConnected)).toBe(true);
+    expect(await hostPage.evaluate(() => window.__youtubePlayerCount)).toBe(hostPlayerCount);
 
     await hostPage.locator('.person-row')
       .filter({ hasText: 'GuestUser' })
@@ -143,6 +158,7 @@ test('playback controls, role changes, and reconnection preserve the player inst
     await expect(hostPage.locator('.person-row').filter({ hasText: 'HostUser' }).locator('.role-badge'))
       .toHaveText('Moderator');
     await expect(hostPage.getByText('In sync')).toBeVisible();
+    expect(await hostPage.evaluate(() => window.__youtubePlayerCount)).toBe(hostPlayerCount);
   } finally {
     await hostContext.close();
     await guestContext.close();

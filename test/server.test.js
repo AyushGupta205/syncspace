@@ -6,7 +6,17 @@ import { createPartyServer } from '../server/index.js';
 const VIDEO_A = 'dQw4w9WgXcQ';
 const VIDEO_B = '9bZkp7q19f0';
 const delay = (ms = 40) => new Promise((resolve) => setTimeout(resolve, ms));
-const once = (socket, event) => new Promise((resolve) => socket.once(event, resolve));
+const once = (socket, event, label = event) => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => {
+    socket.off(event, handler);
+    reject(new Error(`Timed out waiting for ${label}.`));
+  }, 5000);
+  const handler = (...args) => {
+    clearTimeout(timer);
+    resolve(...args);
+  };
+  socket.once(event, handler);
+});
 const emit = (socket, event, data) => new Promise((resolve) => socket.emit(event, data, resolve));
 
 test('room creation, authorization, synchronization, isolation, removal, and reconnection', async (t) => {
@@ -79,6 +89,147 @@ test('room creation, authorization, synchronization, isolation, removal, and rec
   otherHost.disconnect(); await delay();
   const staleRoom = rooms.get(other.roomId); staleRoom.getParticipantById(other.self.id).disconnectedAt = Date.now() - (16 * 60 * 1000);
   staleRoom.pruneDisconnected(); assert.equal(staleRoom.participants.size, 0);
+});
+
+test('session recovery replaces active sockets and preserves roles and authorization', async (t) => {
+  const server = createPartyServer({ serveClient: false, dbPath: ':memory:' });
+  await new Promise((resolve) => server.httpServer.listen(0, resolve));
+  const url = `http://127.0.0.1:${server.httpServer.address().port}`;
+  const sockets = [];
+  const connect = async () => {
+    const socket = client(url, { transports: ['websocket'], forceNew: true });
+    sockets.push(socket);
+    await once(socket, 'connect');
+    return socket;
+  };
+  t.after(async () => {
+    sockets.forEach((socket) => socket.close());
+    await server.close();
+  });
+
+  const host = await connect();
+  const created = await emit(host, 'create_room', { username: 'RecoveryHost' });
+  const moderator = await connect();
+  const moderatorJoined = await emit(moderator, 'join_room', {
+    roomId: created.roomId,
+    username: 'RecoveryModerator',
+  });
+  const participant = await connect();
+  const participantJoined = await emit(participant, 'join_room', {
+    roomId: created.roomId,
+    username: 'RecoveryParticipant',
+  });
+  const roleUpdate = once(moderator, 'participants_updated');
+  host.emit('assign_role', {
+    roomId: created.roomId,
+    userId: moderatorJoined.self.id,
+    role: 'moderator',
+  });
+  assert.equal((await roleUpdate).find((member) => member.id === moderatorJoined.self.id).role, 'moderator');
+
+  const invalidSession = await emit(await connect(), 'resume_room', {
+    roomId: created.roomId,
+    sessionToken: 'invalid-session-token',
+  });
+  assert.equal(invalidSession.code, 'SESSION_INVALID');
+
+  const room = server.roomManager.getRoom(created.roomId);
+  const moderatorOldSocketId = moderator.id;
+  const moderatorDisconnect = once(moderator, 'disconnect');
+  const moderatorReplacement = await connect();
+  const resumedModerator = await emit(moderatorReplacement, 'resume_room', {
+    roomId: created.roomId,
+    sessionToken: moderatorJoined.self.sessionToken,
+  });
+  await moderatorDisconnect;
+  assert.equal(resumedModerator.self.id, moderatorJoined.self.id);
+  assert.equal(resumedModerator.self.username, 'RecoveryModerator');
+  assert.equal(resumedModerator.self.role, 'moderator');
+  assert.equal(room.participants.size, 3);
+  assert.equal(room.getParticipant(moderatorOldSocketId), undefined);
+  assert.equal(room.getParticipantById(moderatorJoined.self.id).socketId, moderatorReplacement.id);
+  assert.equal(room.getParticipantById(moderatorJoined.self.id).connected, true);
+  assert.equal(room.disconnect(moderatorOldSocketId), null, 'a stale disconnect must not affect the replacement socket');
+
+  const syncedState = once(host, 'sync_state');
+  const moderatorSocket = sockets.at(-1);
+  moderatorSocket.emit('playback', { roomId: created.roomId, type: 'play', time: 12 });
+  assert.equal((await syncedState).isPlaying, true, 'the recovered moderator retains playback control');
+  const deniedRoleChange = once(moderatorSocket, 'action_rejected');
+  moderatorSocket.emit('assign_role', {
+    roomId: created.roomId,
+    userId: participantJoined.self.id,
+    role: 'moderator',
+  });
+  assert.match((await deniedRoleChange).message, /Only the host/);
+
+  const hostOldSocketId = host.id;
+  const hostDisconnect = once(host, 'disconnect');
+  const hostReplacement = await connect();
+  const resumedHost = await emit(hostReplacement, 'resume_room', {
+    roomId: created.roomId,
+    sessionToken: created.self.sessionToken,
+  });
+  await hostDisconnect;
+  assert.equal(resumedHost.self.id, created.self.id);
+  assert.equal(resumedHost.self.role, 'host');
+  assert.equal(room.getParticipant(hostOldSocketId), undefined);
+  assert.equal(room.isHost(hostReplacement.id), true);
+
+  const participantOldSocketId = participant.id;
+  const participantDisconnect = once(participant, 'disconnect');
+  const participantReplacement = await connect();
+  const resumedParticipant = await emit(participantReplacement, 'resume_room', {
+    roomId: created.roomId,
+    sessionToken: participantJoined.self.sessionToken,
+  });
+  await participantDisconnect;
+  assert.equal(resumedParticipant.self.id, participantJoined.self.id);
+  assert.equal(resumedParticipant.self.role, 'participant');
+  const deniedPlayback = once(participantReplacement, 'action_rejected');
+  participantReplacement.emit('playback', { roomId: created.roomId, type: 'pause', time: 8 });
+  assert.match((await deniedPlayback).message, /Only a host or moderator/);
+  assert.equal(room.getParticipant(participantOldSocketId), undefined);
+
+  const disconnected = once(participantReplacement, 'disconnect', 'network disconnect');
+  participantReplacement.disconnect();
+  await disconnected;
+  await delay();
+  assert.equal(room.getParticipantById(participantJoined.self.id).connected, false);
+  const networkReconnection = await connect();
+  const reconnectedParticipant = await emit(networkReconnection, 'resume_room', {
+    roomId: created.roomId,
+    sessionToken: participantJoined.self.sessionToken,
+  });
+  assert.equal(reconnectedParticipant.self.id, participantJoined.self.id);
+  assert.equal(reconnectedParticipant.self.role, 'participant');
+  assert.equal(room.participants.size, 3);
+
+  const otherHost = await connect();
+  const otherRoom = await emit(otherHost, 'create_room', { username: 'IsolatedRecoveryHost' });
+  let roomLeaked = false;
+  moderatorSocket.once('sync_state', () => { roomLeaked = true; });
+  otherHost.emit('playback', { roomId: otherRoom.roomId, type: 'play', time: 1 });
+  await delay();
+  assert.equal(roomLeaked, false, 'recovered members remain isolated to their original room');
+
+  const expiringParticipant = await connect();
+  const expiringJoin = await emit(expiringParticipant, 'join_room', {
+    roomId: created.roomId,
+    username: 'ExpiringParticipant',
+  });
+  const expiryObserved = once(expiringParticipant, 'disconnect', 'expired participant disconnect');
+  expiringParticipant.disconnect();
+  await expiryObserved;
+  await delay();
+  const expiringMember = room.getParticipantById(expiringJoin.self.id);
+  expiringMember.disconnectedAt = Date.now() - (16 * 60 * 1000);
+  const expiredSession = await emit(await connect(), 'resume_room', {
+    roomId: created.roomId,
+    sessionToken: expiringJoin.self.sessionToken,
+  });
+  assert.equal(expiredSession.code, 'SESSION_EXPIRED');
+  assert.equal(room.getParticipantById(expiringJoin.self.id), undefined);
 });
 
 test('host transfer, reactions, direct play/pause/seek/change_video events, and granular room broadcasts', async (t) => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import { videoIdFrom } from './videoId.js';
 import { ThemeToggle } from './ThemeToggle.jsx';
@@ -18,6 +18,8 @@ export function App() {
       return null;
     }
   });
+  const sessionRef = useRef(session);
+  const lastResumeSocketId = useRef(null);
 
   const [form, setForm] = useState(() => ({
     username: '',
@@ -41,36 +43,73 @@ export function App() {
   useEffect(() => {
     if (!socket) return;
     const restore = () => {
-      if (!session?.roomId || !session?.sessionToken) return;
-      socket.emit('resume_room', session, (data) => {
-        if (data?.error) {
-          sessionStorage.removeItem('syncspace-session');
-          setSession(null);
-          setRoom(null);
-          setError(data.error);
-        } else if (data) {
-          setRoom(data);
-        }
-      });
+      const savedSession = sessionRef.current;
+      const socketId = socket.id;
+      if (
+        !savedSession?.roomId ||
+        !savedSession?.sessionToken ||
+        !socketId ||
+        lastResumeSocketId.current === socketId
+      ) return;
+      lastResumeSocketId.current = socketId;
+
+      const attemptResume = (attempt = 0) => {
+        if (
+          !socket.connected ||
+          socket.id !== socketId ||
+          sessionRef.current?.sessionToken !== savedSession.sessionToken
+        ) return;
+        socket.timeout(5000).emit('resume_room', savedSession, (timeoutError, data) => {
+          if (timeoutError) {
+            if (attempt < 2 && socket.connected && socket.id === socketId) {
+              window.setTimeout(() => attemptResume(attempt + 1), 500);
+            } else if (socket.id === socketId) {
+              setError('Unable to restore your room session. Reconnecting; please wait.');
+            }
+            return;
+          }
+
+          if (sessionRef.current?.sessionToken !== savedSession.sessionToken) return;
+          if (data?.error) {
+            setError(data.error);
+            if (data.code === 'SESSION_INVALID' || data.code === 'SESSION_EXPIRED') {
+              if (sessionRef.current?.sessionToken === savedSession.sessionToken) {
+                sessionRef.current = null;
+                sessionStorage.removeItem('syncspace-session');
+                setSession(null);
+                setRoom(null);
+              }
+            }
+          } else if (data) {
+            setError('');
+            setRoom(data);
+          }
+        });
+      };
+
+      attemptResume();
     };
     socket.on('connect', restore);
     socket.on('action_rejected', ({ message }) => setError(message));
     socket.on('removed_from_room', () => {
+      sessionRef.current = null;
       sessionStorage.removeItem('syncspace-session');
       setSession(null);
       setError('You were removed from this watch party.');
       setRoom(null);
     });
+    if (socket.connected) restore();
     return () => {
       socket.off('connect', restore);
       socket.off('action_rejected');
       socket.off('removed_from_room');
     };
-  }, [socket, session]);
+  }, [socket]);
 
   const enterRoom = (data) => {
     setRoom(data);
     const next = { roomId: data.roomId, sessionToken: data.self.sessionToken };
+    sessionRef.current = next;
     sessionStorage.setItem('syncspace-session', JSON.stringify(next));
     setSession(next);
   };
@@ -111,6 +150,7 @@ export function App() {
     if (room?.roomId) {
       socket?.emit('leave_room', { roomId: room.roomId });
     }
+    sessionRef.current = null;
     sessionStorage.removeItem('syncspace-session');
     setSession(null);
     setRoom(null);

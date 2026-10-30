@@ -51,19 +51,19 @@ export class Room {
     const participant = [...this.participants.values()].find(
       (member) => member.sessionToken === sessionToken
     );
-    if (!participant) return null;
-    if (participant.connected) return null;
+    if (!participant) return { error: 'invalid' };
 
     if (participant.isStale(SESSION_GRACE_MS)) {
       this.removeParticipant(participant.id);
-      return null;
+      return { error: 'expired' };
     }
 
+    const previousSocketId = participant.connected ? participant.socketId : null;
+    if (previousSocketId) this.socketIndex.delete(previousSocketId);
     participant.setConnected(socketId);
     this.socketIndex.set(socketId, participant.id);
-    this.ensureHost();
     this.db?.saveParticipant(this.id, participant);
-    return participant;
+    return { participant, previousSocketId };
   }
 
   disconnect(socketId) {
