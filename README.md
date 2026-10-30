@@ -11,7 +11,7 @@ SyncSpace is a high-performance, real-time YouTube watch party application built
 - [Role-Based Access Control (RBAC)](#role-based-access-control-rbac)
 - [Real-Time Synchronization Strategy](#real-time-synchronization-strategy)
 - [WebSocket Events Reference](#websocket-events-reference)
-- [Persistence & SQLite Architecture](#persistence--sqlite-architecture)
+- [Storage & SQLite Architecture](#storage--sqlite-architecture)
 - [Scalability & Redis Multi-Instance Roadmap](#scalability--redis-multi-instance-roadmap)
 - [Security, Rate Limiting & Error Handling](#security-rate-limiting--error-handling)
 - [Local Setup & Development](#local-setup--development)
@@ -33,7 +33,7 @@ SyncSpace is a high-performance, real-time YouTube watch party application built
   - **Participant**: Watch-only viewer with interactive chat and reaction capabilities.
 - **Live Room Chat**: Real-time group messaging with auto-scroll, formatted timestamps, rate limiting, and system lifecycle announcements (join, leave, promotion, removal).
 - **Synchronized Floating Reactions**: Live emoji reaction bar (`🔥`, `❤️`, `😂`, `👏`, `🎉`, `😮`) rendering floating animated reactions across peer players.
-- **Persistent Room State**: SQLite engine automatically preserves room metadata, video timelines, and member roles across server restarts.
+- **SQLite Room Storage**: Embedded SQLite engine tracks room metadata, video timelines, and member roles during the application lifecycle.
 - **Seamless Session Recovery**: 15-minute reconnect grace period using cryptographic private session tokens, shielding against transient network drops.
 
 ---
@@ -153,12 +153,13 @@ All permission checks are executed server-side. Unpermitted actions are rejected
 
 ---
 
-## Persistence & SQLite Architecture
+## Storage & SQLite Architecture
 
-SyncSpace integrates a persistent SQLite storage layer (`server/db.js` using Node's native `DatabaseSync`):
+SyncSpace integrates a lightweight SQLite storage layer (`server/db.js` using Node's native `DatabaseSync`):
 - **Rooms Table**: Tracks `id`, `video_id`, `current_time`, `is_playing`, `created_at`, `updated_at`.
 - **Participants Table**: Tracks `id`, `room_id`, `username`, `role`, `session_token`, `connected`, `disconnected_at`.
-- **Automatic Recovery**: On server startup, `RoomManager.restoreFromDb()` loads all persisted rooms and participant sessions. Reconnecting users can immediately recover their seats and roles using their browser session token.
+- **In-Memory & Local Storage**: In local development and cloud deployments, SQLite runs on container storage (`data/syncspace.db`).
+- **Ephemeral Storage Disclosure**: Free-tier cloud hosts (such as Render Free Tier) use ephemeral filesystems without persistent disks. Active rooms, playback timelines, and session tokens operate with full fidelity while the container is running. However, when the free instance sleeps after 15 minutes of zero traffic or restarts on redeployment, the container filesystem resets and historical room sessions are cleared. This is fully consistent with the original watch-party assignment's design.
 - **Zero-Dependency**: Built on Node's native SQLite engine without requiring C++ node-gyp builds or external database servers.
 
 ---
@@ -284,26 +285,31 @@ node scratch/load_test.mjs
 
 SyncSpace requires a persistent Node process for WebSocket connections. Deploy as a **Web Service** (not a static site).
 
-### Deploying to Render
+### Deploying to Render (Free Tier)
 1. Push this repository to GitHub or GitLab.
-2. In Render Dashboard, click **New +** → **Web Service** and select your repository.
-3. Configure settings:
+2. In Render Dashboard, click **New +** → **Blueprint** and select your repository (`render.yaml` automatically sets `plan: free`).
+   *(Or click **New +** → **Web Service** manually).*
+3. Configuration settings (handled automatically by `render.yaml`):
    - **Environment**: `Node`
+   - **Plan**: `Free`
    - **Build Command**: `npm ci && npm run build`
    - **Start Command**: `npm start`
-4. Add Environment Variables:
+   - **Health Check Path**: `/api/health`
+4. Environment Variables:
    - `NODE_ENV`: `production`
-   - `CLIENT_ORIGIN`: `https://your-app-name.onrender.com` *(or comma-separated list of allowed origins)*
-   - `PORT`: `10000` *(Render sets this automatically)*
-   - `DB_PATH`: `/data/syncspace.db` *(Attach a Render Persistent Disk mounted at `/data` as configured in `render.yaml` for persistent SQLite across deploys)*
-5. Click **Create Web Service**. Verify health endpoint at `https://your-app-name.onrender.com/api/health`.
+   - `NODE_VERSION`: `22`
+   - `DB_PATH`: `data/syncspace.db`
+   - `CLIENT_ORIGIN`: *(Optional: set to your Render URL `https://your-app-name.onrender.com` or leave empty for same-origin)*
+5. Click **Apply** / **Create Web Service**. Render will provision the free web service. Verify the health endpoint at `https://your-app-name.onrender.com/api/health`. *(Note: Render may occasionally prompt for standard account identity verification depending on your account standing).*
+
+> **Note on Free-Tier Storage**: Render Free tier uses ephemeral container storage. SQLite operates normally in `data/syncspace.db` during container execution, but database data resets if the container goes to sleep after 15 minutes of zero traffic or upon redeployment.
 
 ### Deploying to Railway
 1. Click **New Project** → **Deploy from GitHub repo**.
 2. Railway detects the Node environment automatically.
 3. In service **Settings** → **Variables**:
    - Add `CLIENT_ORIGIN` with your Railway generated domain.
-   - Attach a Railway Volume mounted to `/data` and set `DB_PATH=/data/syncspace.db`.
+   - Set `DB_PATH=data/syncspace.db`.
 
 ---
 
