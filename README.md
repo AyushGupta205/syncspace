@@ -1,347 +1,242 @@
 # SyncSpace Watch Party
 
-SyncSpace is a single-instance, real-time YouTube watch party application built with React, Node.js, Express, and Socket.IO. Users can create rooms with six-character codes, invite friends via shareable links, and coordinate YouTube playback with role-based access control, live chat, emoji reactions, and SQLite-backed session recovery.
+SyncSpace is a real-time YouTube watch-party application. Create a room, invite people with a six-character code or link, and watch together with server-authoritative playback, role-based controls, chat, and reactions.
 
----
+- **Live application:** [syncspace-watch-party-0335.onrender.com](https://syncspace-watch-party-0335.onrender.com/)
+- **Repository:** [github.com/AyushGupta205/syncspace](https://github.com/AyushGupta205/syncspace)
 
-## Table of Contents
+## Contents
+
 - [Features](#features)
-- [Technology Stack](#technology-stack)
-- [System Architecture & OOP Design](#system-architecture--oop-design)
-- [Role-Based Access Control (RBAC)](#role-based-access-control-rbac)
-- [Real-Time Synchronization Strategy](#real-time-synchronization-strategy)
-- [WebSocket Events Reference](#websocket-events-reference)
-- [Storage & SQLite Architecture](#storage--sqlite-architecture)
-- [Scalability & Redis Multi-Instance Roadmap](#scalability--redis-multi-instance-roadmap)
-- [Security, Rate Limiting & Error Handling](#security-rate-limiting--error-handling)
-- [Local Setup & Development](#local-setup--development)
-- [Automated Testing & Concurrency Benchmarks](#automated-testing--concurrency-benchmarks)
-- [Production Deployment (Render / Railway)](#production-deployment-render--railway)
-- [Known Limitations](#known-limitations)
-
----
+- [Technology](#technology)
+- [Architecture](#architecture)
+- [Roles and permissions](#roles-and-permissions)
+- [Playback synchronization](#playback-synchronization)
+- [Socket.IO events](#socketio-events)
+- [Storage and session recovery](#storage-and-session-recovery)
+- [Security and limits](#security-and-limits)
+- [Local development](#local-development)
+- [Tests and load checks](#tests-and-load-checks)
+- [Operations](#operations)
+- [Deployment](#deployment)
+- [Future scalability roadmap](#future-scalability-roadmap)
+- [Known limitations](#known-limitations)
 
 ## Features
 
-- **Room Management**: Instant 6-character room code generation (e.g. `M3RRBS`) with collision avoidance and deep linking via `?room=CODE`.
-- **YouTube Player**: Embedded via the official YouTube IFrame Player API (16:9 responsive aspect ratio). Native player controls and keyboard shortcuts are disabled; Host and Moderator playback is driven by synchronized app controls, while Participants can request Host/Moderator approval for play, pause, seek, or video changes.
-- **Server-Authoritative Playback**: The server tracks playback time from a state timestamp; clients periodically correct drift. Synchronization is best-effort and depends on network and YouTube player latency.
-- **Custom Playback Toolbar**: Quick `−10s` rewind, `+10s` fast-forward, and expandable `Change Video` panel supporting standard URLs, Shorts, embeds, and raw 11-char IDs.
-- **Role-Based Access Control (RBAC)**:
-  - **Host**: Creator of the room; possesses full room control, video changing, role promotion/demotion, participant removal, and Host ownership transfer.
-  - **Moderator**: Authorized by the Host to control playback and change videos.
-  - **Participant**: Watch-only viewer with interactive chat and reaction capabilities.
-  - **Participant playback requests**: Participants submit a play, pause, seek, or video-change request. Only connected Hosts and Moderators receive the request; an approval applies it to authoritative room state, while rejection or expiry leaves playback unchanged.
-- **Live Room Chat**: Real-time group messaging with auto-scroll, formatted timestamps, rate limiting, and system lifecycle announcements (join, leave, promotion, removal).
-- **Synchronized Floating Reactions**: Live emoji reaction bar (`🔥`, `❤️`, `😂`, `👏`, `🎉`, `😮`) rendering floating animated reactions across peer players.
-- **SQLite Room Storage**: Embedded SQLite engine tracks room metadata, video timelines, and member roles during the application lifecycle.
-- **Session Recovery**: 15-minute reconnect grace period using private session tokens. When a host disconnects, a connected moderator is promoted, otherwise the longest-standing connected participant becomes host.
+- Six-character room codes with collision avoidance and shareable `?room=CODE` links.
+- Embedded YouTube playback with native player controls for Hosts and Moderators, plus synchronized SyncSpace controls.
+- Participant playback requests for play, pause, seek, or video changes, subject to Host/Moderator approval.
+- Host-managed roles, participant removal, and Host transfer.
+- Live chat, system messages, and synchronized emoji reactions.
+- SQLite persistence and recovery of room/session data.
+- Health and aggregate metrics endpoints.
 
----
+## Technology
 
-## Technology Stack
+- **Frontend:** React 19, Vite 7, and CSS.
+- **Backend:** Node.js 22.5+, Express 5, and Socket.IO 4.
+- **Persistence:** SQLite through Node's built-in `node:sqlite` API.
+- **Tests:** Node's native test runner and Playwright.
 
-- **Frontend**: React 19, Vite 7, Vanilla CSS3 (Custom Design System with Dark/Light theme toggle).
-- **Backend**: Node.js 22.5+ (Node 25 tested), Express 5, Socket.IO 4.
-- **Storage / Persistence**: Embedded SQLite via Node's native `node:sqlite` (`DatabaseSync`); in-memory fallback is limited to non-production environments.
-- **Testing**: Node.js Native Test Runner (`node:test`, `node:assert/strict`), Socket.IO client multi-session integration suite.
+## Architecture
 
----
+The application is a single Node.js server process. Express serves the built Vite client and HTTP endpoints; Socket.IO handles room communication. Room and participant objects are managed in process, with SQLite used for persistence and recovery.
 
-## System Architecture & OOP Design
-
-SyncSpace separates responsibilities cleanly across specialized Object-Oriented classes on the server:
-
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                       Express 5 Server                      │
-│      - HTTP Security Headers (nosniff, referrer, permissions)│
-│      - Health Check Endpoint (/api/health)                  │
-│      - Static Client Delivery (dist/index.html)             │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-                ┌──────────────┴──────────────┐
-                ▼                             ▼
-   ┌───────────────────────────┐ ┌───────────────────────────┐
-   │     DatabaseService       │ │      Socket.IO Engine     │
-   │  - SQLite (node:sqlite)   │ │  - WebSocket & Polling    │
-   │  - Schema Initialization  │ │  - Ping / Pong Heartbeat  │
-   │  - Persistent CRUD Ops    │ └─────────────┬─────────────┘
-   └────────────▲──────────────┘               │
-                │                              ▼
-   ┌────────────┴──────────────┐ ┌───────────────────────────┐
-   │        RoomManager        │ │    SocketEventHandler     │
-   │  - Room Creation & Lookup │ │  - Event Registration     │
-   │  - Code Generation        │ │  - RBAC Authorization     │
-   │  - Inactivity Pruning     │ │  - Payload Normalization  │
-   │  - DB State Restoration   │ └─────────────┬─────────────┘
-   └────────────▲──────────────┘               │
-                │                              │
-         ┌──────┴──────┐                       ▼
-         ▼             ▼         ┌───────────────────────────┐
-   ┌───────────┐ ┌───────────┐   │      MessageHandler       │
-   │   Room    │ │Participant│   │  - Chat Validation & XSS  │
-   │ - Timeline│ │ - Identity│   │  - Rate Limit Checking    │
-   │ - State   │ │ - Role    │   │  - Emoji Reactions Format │
-   │ - Roster  │ │ - Session │   └───────────────────────────┘
-   └───────────┘ └───────────┘
+```mermaid
+flowchart LR
+  Browser[React and YouTube IFrame API] <-->|HTTP and Socket.IO| Server[Express and Socket.IO]
+  Server --> Events[SocketEventHandler]
+  Events --> Rooms[RoomManager]
+  Rooms --> Room[Room]
+  Room --> Participant[Participant]
+  Events --> Messages[MessageHandler]
+  Server --> DB[DatabaseService - SQLite]
+  Rooms <--> DB
 ```
 
-1. **`Participant` (`server/Participant.js`)**: Encapsulates participant identity, display name, role (`host`, `moderator`, `participant`), socket binding, session token, and connection status.
-2. **`Room` (`server/Room.js`)**: Manages the authoritative video state (`videoId`, `currentTime`, `isPlaying`, `playState`, `updatedAt`), participant rosters, and role modifications.
-3. **`RoomManager` (`server/RoomManager.js`)**: Handles room lifecycle, cryptographically generated room codes, host succession, inactive room garbage collection, resource limits, rate limiting, and persistence restoration.
-4. **`MessageHandler` (`server/MessageHandler.js`)**: Handles message sanitization, length validation, emoji normalization, and chat frequency throttling.
-5. **`SocketEventHandler` (`server/SocketEventHandler.js`)**: Registers and routes WebSocket events, enforces server-side RBAC guards, and handles payload delivery.
-6. **`DatabaseService` (`server/db.js`)**: Provides persistent storage for room metadata and participant rosters using native SQLite.
+Server modules and responsibilities:
 
----
+| Module | Responsibility |
+|---|---|
+| `server/index.js` | Configures Express, Socket.IO, HTTP endpoints, static client delivery, connection limits, and service instances. |
+| `server/RoomManager.js` | Creates and looks up rooms, enforces room limits, prunes inactive participants/rooms, and restores persisted rooms. |
+| `server/Room.js` | Owns a room's authoritative playback state, revision, participant membership, roles, and host succession. |
+| `server/Participant.js` | Represents participant identity, role, socket binding, connection state, and private recovery token. |
+| `server/SocketEventHandler.js` | Registers socket events, validates playback actions, enforces server-side permissions, and broadcasts room updates. |
+| `server/MessageHandler.js` | Validates chat and reactions and applies message/reaction rate limits. |
+| `server/db.js` (`DatabaseService`) | Initializes SQLite and stores/restores room and participant records. |
 
-## Role-Based Access Control (RBAC)
+## Roles and permissions
 
-All permission checks are executed server-side. Unpermitted actions are rejected with an explicit `action_rejected` socket emission:
+The server checks the participant associated with the connected socket for every privileged action. Client-side controls are a user-interface affordance, not the authorization boundary.
 
-| Feature / Action | Host | Moderator | Participant |
-| :--- | :---: | :---: | :---: |
-| Play / Pause Video | ✅ | ✅ | ❌ *(Rejected)* |
-| Seek Timestamp | ✅ | ✅ | ❌ *(Rejected)* |
-| Change Video URL / ID | ✅ | ✅ | ❌ *(Rejected)* |
-| Promote to Moderator | ✅ | ❌ | ❌ |
-| Demote to Participant | ✅ | ❌ | ❌ |
-| Transfer Host Ownership | ✅ | ❌ | ❌ |
-| Remove (Kick) Participant| ✅ | ❌ | ❌ |
-| Send Chat Messages | ✅ | ✅ | ✅ |
-| Send Emoji Reactions | ✅ | ✅ | ✅ |
+| Action | Host | Moderator | Participant |
+|---|:---:|:---:|:---:|
+| Native YouTube Play/Pause (shared) | Yes | Yes | No direct shared control |
+| SyncSpace Play/Pause and seek controls | Yes | Yes | No direct control |
+| Change video through SyncSpace | Yes | Yes | Request approval |
+| Request Play/Pause, seek, or video change | Not needed | Not needed | Yes |
+| Approve or reject participant playback requests | Yes | Yes | No |
+| Assign/demote moderators | Yes | No | No |
+| Transfer Host or remove a participant | Yes | No | No |
+| Chat and reactions | Yes | Yes | Yes |
 
----
+Participants can submit playback requests; only a connected Host or Moderator can approve them. Requests expire after two minutes. Server-side role and payload checks still apply to all direct socket actions.
 
-## Real-Time Synchronization Strategy
+## Playback synchronization
 
-1. **Authoritative Timeline**: The server maintains the source of truth. Its current playback time advances from a server timestamp while playing. Playback mutations are broadcast as `sync_state`.
-2. **Echo Prevention**: Player state callbacks are compared with the current authoritative play/pause state so commands applied from the server are not sent back as duplicate commands.
-3. **Drift Correction**: Clients periodically compare player time with the authoritative timeline and seek when drift exceeds 1.5 seconds. This is best-effort rather than frame-accurate synchronization.
-4. **Role-aware controls**: The embed disables native controls and keyboard shortcuts for every role. Host and Moderator use custom synchronized controls; Participant iframe interaction is disabled, and playback requests take effect only after a Host or Moderator approves them. Role changes update iframe interaction without remounting the player.
+The room's server state is authoritative. It includes the video ID, play/pause state, timeline, update timestamp, and monotonically increasing revision. While playing, the server derives the current position from its timestamp and broadcasts state changes as `sync_state`.
 
----
+- **Native Play/Pause:** The YouTube IFrame API reports player state changes but does not conclusively identify whether a callback came from a user or a programmatic command. The client compares the actual player state with the latest authoritative state, current video, and revision before deciding whether an authorized native action should be queued. Programmatic callbacks are reconciled rather than broadcast as new shared commands.
+- **Custom Play/Pause and seek:** Native Play/Pause intents and SyncSpace Play/Pause/seek actions use a client-side serialized queue. Each action is sent to the server, which validates the role and payload, advances the room revision, and broadcasts the resulting state. Native actions additionally carry an expected revision; stale requests are rejected and the latest room state is returned.
+- **Video changes:** The SyncSpace video-change action is validated and applied by the server. The room revision advances, and clients load or cue the new video according to the authoritative play state. Changing video preserves whether the room was playing or paused.
+- **Stale callbacks and drift:** Player callbacks are reconciled against the latest authoritative state; stale revisions are ignored. Clients periodically compare player time with the server timeline and correct drift greater than 1.5 seconds.
+- **Native seek:** The implementation does not convert the YouTube seek-bar interaction into a shared seek action. Use SyncSpace's `−10s` and `+10s` controls for synchronized seeking. Periodic reconciliation may move a locally scrubbed player back toward the room timeline.
+- **Role-aware player interaction:** Native controls are enabled (`controls: 1`). Pointer interaction with the iframe is disabled for Participants and enabled for Hosts/Moderators without recreating the player on role changes. The IFrame API is configured with `disablekb: 0`; keyboard shortcuts are not described as disabled. The backend remains authoritative regardless of client-side interaction.
 
-## WebSocket Events Reference
+Synchronization is best-effort, not frame-accurate. Network latency, buffering, YouTube player delays, autoplay restrictions, and browser behavior can affect when playback changes appear.
 
-| Event Name | Direction | Payload | Description |
-| :--- | :--- | :--- | :--- |
-| `create_room` | Client → Server | `{ username, videoId? }` | Creates room; client becomes Host. |
-| `join_room` | Client → Server | `{ roomId, username }` | Joins room; client becomes Participant. |
-| `resume_room` | Client → Server | `{ roomId, sessionToken }` | Resumes session after disconnect. |
-| `leave_room` | Client → Server | `{ roomId }` | Gracefully leaves room. |
-| `sync_state` | Server → Client | `{ playState, currentTime, videoId, isPlaying, revision }` | Authoritative room playback broadcast; clients ignore stale or duplicate revisions. |
-| `play` | Client → Server | `{ roomId, currentTime }` | Starts playback (Host/Mod only). |
-| `pause` | Client → Server | `{ roomId, currentTime }` | Pauses playback (Host/Mod only). |
-| `seek` | Client → Server | `{ roomId, currentTime }` | Seeks to timestamp (Host/Mod only). |
-| `change_video` | Client → Server | `{ roomId, videoId }` | Changes video ID (Host/Mod only). |
-| `playback` | Client → Server | `{ roomId, type, time, videoId? }` | Unified playback control route. |
-| `request_playback_change` | Client → Server | `{ roomId, type, time?, videoId? }` | Participant requests play, pause, seek, or video change; validated and rate-limited. |
-| `playback_change_requested` | Server → Host/Moderators | `{ id, requesterId, requesterName, action, createdAt }` | Notifies connected approvers of a pending request; requests expire after two minutes. |
-| `resolve_playback_request` | Client → Server | `{ roomId, requestId, decision }` | Host/Moderator approves or rejects a pending request. |
-| `playback_request_resolved` | Server → Host/Moderators | `{ requestId, decision }` | Removes the request from approver queues. |
-| `playback_request_result` | Server → Requester | `{ requestId, decision }` | Reports approval, rejection, expiry, or cancellation to the requester. |
-| `pending_playback_requests` | Server → Host/Moderators | `[ { id, requesterId, requesterName, action, createdAt } ]` | Refreshes the queue when an active participant gains an approver role. |
-| `assign_role` | Client → Server | `{ roomId, userId, role }` | Promotes/demotes member (Host only). |
-| `transfer_host` | Client → Server | `{ roomId, userId }` | Transfers Host ownership (Host only). |
-| `remove_participant`| Client → Server | `{ roomId, userId }` | Removes disruptive user (Host only). |
-| `user_joined` | Server → Client | `{ username, userId, role, participant }` | Incremental participant update when a user joins. |
-| `user_left` | Server → Client | `{ username, userId }` | Incremental roster update when a user leaves. |
-| `role_assigned` | Server → Client | `{ userId, username, role, participants }` | Broadcast on role change. |
-| `participant_removed`| Server → Client | `{ userId }` | Incremental roster update when a user is removed. |
-| `removed_from_room` | Server → Client | *(empty)* | Direct notification to removed user. |
-| `participants_updated`| Server → Client | `[ { id, username, role, connected } ]` | Full roster broadcast. |
-| `chat` | Client → Server | `{ roomId, text/message }` | Sends chat message. |
-| `chat_message` | Server → Client | `{ id, username, text, time, timestamp }` | Live chat broadcast. |
-| `reaction` | Bi-directional | `{ roomId, emoji, username?, id? }` | Broadcasts floating emoji reaction. |
-| `chat_rate_limited` | Server → Client | `{ error }` | Warns user of message flooding. |
-| `action_rejected` | Server → Client | `{ message, error }` | Explains permission/validation failure. |
-| `host_changed` | Server → Client | `{ userId, username }` | Announces the new Host after ownership succession. |
+## Socket.IO events
 
----
+The `playback` event is the unified playback route. The server also accepts the listed `play`, `pause`, `seek`, and `change_video` compatibility events.
 
-## Storage & SQLite Architecture
+| Event | Direction | Purpose |
+|---|---|---|
+| `create_room` | Client → server | Create a room; creator becomes Host. |
+| `join_room` | Client → server | Join an existing room as Participant. |
+| `resume_room` | Client → server | Resume a session using its room ID and private session token. |
+| `leave_room` | Client → server | Leave a room. |
+| `playback` | Client → server | Request `play`, `pause`, `seek`, or `video`; native intents may include `expectedRevision`. |
+| `play`, `pause`, `seek`, `change_video` | Client → server | Compatibility aliases for playback actions. |
+| `sync_state` | Server → room | Broadcast authoritative playback state and revision, or return the current state after a stale native action. |
+| `request_playback_change` | Participant → server | Submit a playback request for approval. |
+| `playback_change_requested` | Server → Host/Moderators | Notify approvers of a pending request. |
+| `resolve_playback_request` | Host/Moderator → server | Approve or reject a pending request. |
+| `playback_request_resolved`, `playback_request_result`, `pending_playback_requests` | Server → clients | Update approver queues and report a request result to its requester. |
+| `assign_role`, `transfer_host`, `remove_participant` | Client → server | Host-only room-management actions. |
+| `participants_updated`, `user_joined`, `user_left`, `participant_disconnected`, `role_assigned`, `participant_removed`, `host_changed`, `removed_from_room` | Server → clients | Report membership, role, removal, and Host changes. |
+| `chat` | Client → server | Submit a chat message. |
+| `chat_message`, `chat_rate_limited` | Server → clients | Broadcast a message or report chat throttling. |
+| `reaction` | Client → server; server → room | Submit and broadcast an allowed emoji reaction. |
+| `action_rejected` | Server → client | Report a rejected action or authorization/validation error. |
 
-SyncSpace integrates a lightweight SQLite storage layer (`server/db.js` using Node's native `DatabaseSync`):
-- **Rooms Table**: Tracks `id`, `video_id`, `current_time`, `is_playing`, `created_at`, `updated_at`.
-- **Participants Table**: Tracks `id`, `room_id`, `username`, `role`, `session_token`, `joined_at`, `connected`, and `disconnected_at`.
-- **Local Storage**: SQLite runs at `DB_PATH`; configure a durable mounted volume in production.
-- **Storage Durability**: The Render blueprint uses free-tier ephemeral storage, so its database is lost on sleep/redeployment. Production deployments requiring durable state must mount a persistent volume and point `DB_PATH` to it. The Docker image defaults to `/data/syncspace.db`; mount `/data` as a persistent volume. The health endpoint reports degraded persistence and returns HTTP 503 in production if SQLite cannot initialize, is in-memory, or has reported an error.
-- **Schema Evolution**: Participant join-order data is added with an idempotent SQLite column migration at startup; future schema changes should use explicit versioned migrations.
-- **Zero-Dependency**: Built on Node's native SQLite engine without requiring C++ node-gyp builds or external database servers.
+## Storage and session recovery
 
----
+`server/db.js` creates two SQLite tables:
 
-## Scalability & Redis Multi-Instance Roadmap
+- **`rooms`** stores room ID, video ID, current time, play state, and creation/update timestamps.
+- **`participants`** stores participant ID, room ID, username, role, private session token, join order, and connection status.
 
-`npm run load-test -- 100` runs a local, repeatable Socket.IO load check and reports connection/join latency, room-wide playback delivery latency, and server counters. In recorded runs on this workstation, a 250-client room joined in 1.13 seconds (121 ms p95 join acknowledgement) with 12.38 ms p95 room-wide playback delivery. A 1,000-client room joined in 13.18 seconds (572 ms p95 join acknowledgement) with 30.61 ms p95 room-wide playback delivery. These process-level in-memory results do not represent a Render deployment or multi-instance capacity. When scaling horizontally across multiple cloud instances or container replicas:
+Set `DB_PATH` to choose the SQLite file; the default is `data/syncspace.db`. SQLite uses write-ahead logging, a busy timeout, foreign keys, and an index for room participant ordering. The startup schema setup includes an idempotent migration for participant join-order data.
 
-```text
-               ┌─────────────────────────────────────┐
-               │         Load Balancer / Proxy       │
-               │ Cookie affinity (if polling enabled)│
-               └───────────┬──────────────┬──────────┘
-                           │              │
-             ┌─────────────▼─┐          ┌─▼─────────────┐
-             │ Node Instance │          │ Node Instance │
-             │     (Pod 1)   │          │     (Pod 2)   │
-             └───────┬───────┘          └───────┬───────┘
-                     │                          │
-                     └───────────┬──────────────┘
-                                 ▼
-                     ┌───────────────────────┐
-                     │   Redis Cluster / DB  │
-                     │  - @socket.io/redis-  │
-                     │    adapter (Pub/Sub)  │
-                     │  - Shared Room Cache  │
-                     └───────────────────────┘
-```
+Recovery tokens are stored in browser `sessionStorage` and are not included in public participant data. A reconnect can resume the same participant session within the 15-minute grace period. If a session is resumed from a replacement socket, the previous socket is disconnected. Persisted rooms are restored at server startup when SQLite is available. The process-local in-memory fallback is for non-production environments only; production health checks report unavailable/degraded persistence.
 
-### Steps to Enable Multi-Instance Redis Adapter:
-1. Install the official adapter:
-   ```bash
-   npm install @socket.io/redis-adapter ioredis
-   ```
-2. In `server/index.js`, attach the adapter:
-   ```javascript
-   import { createAdapter } from '@socket.io/redis-adapter';
-   import Redis from 'ioredis';
+## Security and limits
 
-   if (process.env.REDIS_URL) {
-     const pubClient = new Redis(process.env.REDIS_URL);
-     const subClient = pubClient.duplicate();
-     io.adapter(createAdapter(pubClient, subClient));
-     console.log('Socket.IO Redis adapter enabled for multi-instance clustering.');
-   }
-   ```
-3. When Socket.IO's HTTP long-polling transport is enabled, configure cookie-based session affinity on the load balancer so all requests for a connection reach the same instance; avoid relying on client-IP affinity where possible. WebSocket-only connections do not need polling request affinity, but reconnects can still land on another instance. In either case, shared room/session state and cross-instance event fanout are required for correct multi-instance behavior.
+- Server-side checks enforce Host/Moderator playback permissions, Host-only room management, participant membership, and input validation.
+- Video IDs, playback times, usernames, chat text, and reaction emoji are validated. Chat is rendered as React text rather than injected HTML.
+- Session tokens are generated with `node:crypto` and kept out of public room payloads.
+- Defaults include limits of 500 rooms, 100 participants per room, 5,000 connections, and 100 connections per address. These can be configured with environment variables.
+- Room creation is limited to 10 attempts per minute per peer address; joining is limited to 20 per minute. Per-socket limits include 20 playback actions per 2 seconds, 3 playback requests per minute, 10 room-management actions per 2 seconds, 10 reactions per 2 seconds, and 5 chat messages per 2 seconds.
+- Production Socket.IO/browser origins default to same-origin; configure `CLIENT_ORIGIN` only when separate allowed origins are needed. JSON bodies are limited to 16 KB.
+- HTTP responses include `X-Content-Type-Options`, `Referrer-Policy`, and `Permissions-Policy` headers.
 
-> This is a future scale-out design, not an implemented mode. The current app keeps room ownership and SQLite state in one process. A Redis Socket.IO adapter alone is insufficient: room state and session ownership must also move to shared storage before running multiple app instances.
+These controls reduce abuse but do not constitute a general guarantee against denial-of-service or other attacks; deploy behind appropriately configured infrastructure.
 
-Room joins and departures use incremental roster events instead of broadcasting the full participant list on every membership change. This removes repeated full-roster serialization and substantially reduces join-burst payload volume; Socket.IO still fans each join event out to the other room members. Full snapshots remain available for initial joins, role changes, and recovery.
-
----
-
-## Security, Rate Limiting & Error Handling
-
-- **XSS & Injection Protection**: Usernames and chat messages are strictly validated, sanitized, truncated, and rendered safely via React text nodes (no `dangerouslySetInnerHTML`).
-- **Cryptographic Tokens**: Session tokens are generated using `node:crypto` (`randomUUID()`), stored securely in `sessionStorage`, and never broadcast to other room participants.
-- **Rate Limiting**:
-  - Room Creation: Max 10 attempts per minute per peer address.
-  - Room Joining: Max 20 attempts per minute per peer address.
-  - Chat: Max 5 messages per 2-second rolling window per socket.
-  - Playback and room management: Max 20 / 10 actions per 2 seconds per socket, respectively.
-  - Reactions: Max 10 per 2 seconds per socket.
-  - Room size, active rooms, total connections, and per-address connections have configurable limits.
-- **Origin and Payload Controls**: Production defaults to same-origin browser connections. Set `CLIENT_ORIGIN` to a comma-separated allowlist only when a separate client origin is required. Socket and JSON request payloads have explicit size limits.
-- **HTTP Security Headers**: Strict HTTP headers enforced via custom Express middleware:
-  - `X-Content-Type-Options: nosniff`
-  - `Referrer-Policy: strict-origin-when-cross-origin`
-  - `Permissions-Policy: camera=(), microphone=(), geolocation=()`
-
----
-
-## Local Setup & Development
+## Local development
 
 ### Prerequisites
-- Node.js 22.5 or newer (tested and verified on Node.js 25.1.0; required for `node:sqlite`).
 
-### 1. Clone & Install Dependencies
+Install Node.js 22.5 or newer (required for the built-in `node:sqlite` API).
+
+### Install and run
+
 ```bash
 git clone https://github.com/AyushGupta205/syncspace.git
 cd syncspace
-npm install
-```
-
-### 2. Start Development Environment
-```bash
+npm ci
 npm run dev
 ```
-- Frontend starts at: `http://localhost:5173`
-- Backend API & Socket server start at: `http://localhost:3005`
 
-### 3. Build & Run Production Locally
+Vite serves the frontend at `http://localhost:5173`; the Express and Socket.IO server listens at `http://localhost:3005`.
+
+To build and run the production server locally:
+
 ```bash
 npm run build
 npm start
 ```
-The server serves the already-built client at `http://localhost:3005`.
+
+The server serves the built client on its configured `PORT` (3005 by default).
 
 ### Docker
+
 ```bash
 docker build -t syncspace-watch-party .
 docker run --rm -p 3005:3005 -v syncspace-data:/data syncspace-watch-party
 ```
-The container runs as a non-root user and has an HTTP health check. Keep `/data` on persistent storage when room recovery across container restarts is required.
 
-### CI
-GitHub Actions runs `npm ci`, the Socket.IO test suite, and the production frontend build on pushes and pull requests.
+The image uses Node 22, runs as a non-root user, and includes an HTTP health check. Mount `/data` on durable storage if the SQLite database must survive container replacement.
 
----
+## Tests and load checks
 
-## Automated Testing & Concurrency Benchmarks
+Run the project checks with:
 
-### 1. Run Unit & Integration Test Suite
 ```bash
 npm test
-```
-This runs the Socket.IO integration tests and YouTube URL parser tests, including role enforcement, malformed actions, state revisions, persistence recovery, and rate limiting.
-
-### 2. Browser Regression Tests
-```bash
-npx playwright install chromium
+npm run build
 npm run test:e2e
-```
-The browser suite starts isolated test server/client processes, stubs the third-party YouTube iframe API, and checks participant control restrictions, approval workflow, role transitions, synchronized video changes, player instance continuity, and session recovery after reload.
-
-### 3. Repeatable Local Socket Load Test
-```bash
 npm run load-test -- 100
 ```
-The optional argument sets the simulated participant count (1–1000). The harness reports p50/p95/max room-join and playback-broadcast latency plus aggregate server counters. It uses an in-memory database and an ephemeral local server; results are not production capacity guarantees.
 
-### Operational Metrics
-`GET /api/health` reports service health, persistence degradation, active rooms, and active connections. `GET /api/metrics` exposes aggregate runtime counters without room or participant identifiers. In production the metrics route is unavailable unless `METRICS_TOKEN` is configured; supply it using `Authorization: Bearer <token>` and restrict access at the deployment proxy as well.
-Server lifecycle and SQLite failures are emitted as structured JSON log events with timestamps and severity.
+- **Unit/integration tests (`npm test`):** Node's test runner covers server/socket behavior, persistence and recovery, role enforcement, playback revisions, validation, and URL parsing.
+- **Browser E2E (`npm run test:e2e`):** Playwright starts isolated server/client processes and mocks the YouTube IFrame API. These tests cover browser flows such as roles, requests, playback synchronization, video changes, and session recovery; they do not prove behavior against YouTube's real player.
+- **Load check (`npm run load-test -- 100`):** Simulates the requested number of Socket.IO participants (1–1,000) against a local in-memory server and reports join and playback-broadcast latency. Results are not production capacity guarantees.
+- **Real-browser playback:** Manual testing with actual YouTube playback has been reported as passed separately from the mocked E2E suite. It is not performed by the commands above.
 
----
+The latest reported playback-fix validation was: unit/integration tests 12/12 passed, production build passed, E2E 3/3 passed twice consecutively, and `git diff --check` passed. Manual real-browser playback was reported passed separately.
 
-## Production Deployment (Render / Railway)
+The GitHub Actions workflow runs dependency installation, Playwright browser installation, unit/integration tests, E2E tests, a 250-client load check, and the production build on pushes and pull requests.
 
-SyncSpace requires a persistent Node process for WebSocket connections. Deploy as a **Web Service** (not a static site).
+## Operations
 
-### Deploying to Render (Free Tier)
-1. Push this repository to GitHub or GitLab.
-2. In Render Dashboard, click **New +** → **Blueprint** and select your repository (`render.yaml` automatically sets `plan: free`).
-   *(Or click **New +** → **Web Service** manually).*
-3. Configuration settings (handled automatically by `render.yaml`):
-   - **Environment**: `Node`
-   - **Plan**: `Free`
-   - **Build Command**: `npm ci --include=dev && npm run build`
-   - **Start Command**: `npm start`
-   - **Health Check Path**: `/api/health`
-4. Environment Variables:
-   - `NODE_ENV`: `production`
-   - `NODE_VERSION`: `22`
-   - `DB_PATH`: `data/syncspace.db`
-   - `CLIENT_ORIGIN`: *(Optional: comma-separated browser origins; leave empty to allow same-origin only)*
-   - `TRUST_PROXY`: `true` only if a trusted reverse proxy overwrites `X-Forwarded-For`.
-5. Click **Apply** / **Create Web Service**. Render will provision the free web service. Verify the health endpoint at `https://your-app-name.onrender.com/api/health`. *(Note: Render may occasionally prompt for standard account identity verification depending on your account standing).*
+| Endpoint | Behavior |
+|---|---|
+| `GET /api/health` | Reports health, persistence status, active rooms/connections, uptime, and timestamp. In production, unavailable or degraded persistence returns HTTP 503. |
+| `GET /api/metrics` | Returns aggregate process counters. In production, the route is unavailable unless `METRICS_TOKEN` is configured; when configured, authorize the request with its Bearer token. |
 
-> **Note on Free-Tier Storage**: Render Free tier uses ephemeral container storage. Its SQLite file resets on sleep/redeployment. Use a paid persistent disk or another durable deployment target when room recovery across restarts is required.
+The metrics endpoint does not include room or participant identifiers. Server lifecycle and SQLite failures are emitted as structured JSON log events.
 
-### Deploying to Railway
-1. Click **New Project** → **Deploy from GitHub repo**.
-2. Railway detects the Node environment automatically.
-3. In service **Settings** → **Variables**:
-   - Add `CLIENT_ORIGIN` with your Railway generated domain.
-   - Set `DB_PATH=data/syncspace.db`.
+Optional environment settings are listed in [.env.example](./.env.example). Notable settings include `PORT`, `NODE_ENV`, `DB_PATH`, `CLIENT_ORIGIN`, `TRUST_PROXY`, `MAX_ROOMS`, `MAX_PARTICIPANTS_PER_ROOM`, `MAX_CONNECTIONS`, `MAX_CONNECTIONS_PER_IP`, and `METRICS_TOKEN`. `TRUST_PROXY` should only be enabled when a trusted proxy overwrites forwarded client addresses.
 
----
+## Deployment
 
-## Known Limitations
+SyncSpace requires a long-running Node.js web service for Socket.IO. The repository's Render configuration is in [`render.yaml`](./render.yaml):
 
-1. **Third-Party YouTube Embed Restrictions**: Certain commercial music videos and protected content owners disable embedding on external websites (YouTube error code 101/150). SyncSpace detects these error codes and displays a clear, helpful banner informing users that the owner disabled iframe embedding.
-2. **Multi-Instance Redis Setup**: Single-instance deployment utilizes the native in-process room manager and embedded SQLite. Horizontally scaling across multiple server instances requires configuring Redis Pub/Sub adapter as documented in the [Scalability section](#scalability--redis-multi-instance-roadmap).
-3. **Local Dev Network Port Binding**: In sandboxed virtualization environments on Windows, loopback network access requires elevated privileges or running commands unsandboxed.
+- Runtime: Node; `NODE_VERSION=22`.
+- Build: `npm ci --include=dev && npm run build`.
+- Start: `npm start`.
+- Health check: `/api/health`.
+- `DB_PATH` is set to `data/syncspace.db`; `CLIENT_ORIGIN` is available for configuration.
+
+The current live application is [https://syncspace-watch-party-0335.onrender.com/](https://syncspace-watch-party-0335.onrender.com/).
+
+**Render Free-tier note:** Free web services may spin down after inactivity and have cold starts. Their filesystem is ephemeral, so SQLite data can be lost when the service restarts, sleeps, or is redeployed. Use durable storage or an external database when room/session persistence across such events is required.
+
+Other deployments need Node.js 22.5+, the same `npm start` command, a writable SQLite path (or suitable storage), and correct proxy/origin configuration. The Docker image defaults to `/data/syncspace.db`.
+
+## Future scalability roadmap
+
+The current application is single-instance: room ownership and live room state are held in one process, with SQLite persistence. Redis is **not** currently deployed. Horizontal scaling would require both cross-instance Socket.IO event fanout (for example, a Redis adapter) and shared, coordinated room/session state; adding a Socket.IO adapter alone would not be sufficient. Polling-based deployments also need suitable load-balancer affinity.
+
+The local load-test script can help compare changes in a controlled environment; its output is machine-specific and is not a Render or multi-instance capacity measurement.
+
+## Known limitations
+
+- YouTube videos may disallow embedding or playback in an iframe (including errors 101/150), be unavailable, or require browser/user action.
+- Autoplay can be blocked by browser policy; synchronization cannot force playback when the browser requires a user gesture.
+- Native YouTube Play/Pause state changes can be observed, but the IFrame API does not conclusively identify whether a callback was user-generated or programmatic. The client reconciles callbacks against authoritative room state and revision; this is best-effort arbitration.
+- Native YouTube seek-bar actions are not submitted as shared seek commands. Use SyncSpace's seek controls for synchronized seeking.
+- Playback synchronization is not frame-accurate and depends on network, buffering, and player latency.
+- The server is single-instance today. Render Free-tier SQLite storage is ephemeral; use durable storage for persistence across service restarts.
