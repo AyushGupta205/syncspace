@@ -41,10 +41,10 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
   const stateAnchorRef = useRef({ receivedAt: Date.now() });
   const revisionRef = useRef(initial.state.revision || 0);
   const authoritativeStateRef = useRef(initial.state);
-  const nativePlaybackQueueRef = useRef([]);
-  const nativePlaybackInFlightRef = useRef(false);
-  const nativePlaybackRevisionRef = useRef(initial.state.revision || 0);
-  const sendNativePlaybackRef = useRef(null);
+  const playbackQueueRef = useRef([]);
+  const playbackInFlightRef = useRef(false);
+  const playbackRevisionRef = useRef(initial.state.revision || 0);
+  const sendPlaybackQueueRef = useRef(null);
 
   const self = useMemo(
     () => people.find((p) => p.id === initial.self.id) || initial.self,
@@ -55,7 +55,7 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
   useEffect(() => {
     stateAnchorRef.current.receivedAt = Date.now();
     revisionRef.current = initial.state.revision || 0;
-    nativePlaybackRevisionRef.current = initial.state.revision || 0;
+    playbackRevisionRef.current = initial.state.revision || 0;
     authoritativeStateRef.current = initial.state;
     setState(initial.state);
     setPlayerLoading(Boolean(initial.state.videoId));
@@ -104,8 +104,8 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
 
     const onDisconnect = () => {
       setSyncStatus('connection_lost');
-      nativePlaybackQueueRef.current = [];
-      nativePlaybackInFlightRef.current = false;
+      playbackQueueRef.current = [];
+      playbackInFlightRef.current = false;
     };
 
     const onConnectError = () => {
@@ -115,7 +115,7 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
     const onSyncState = (next) => {
       if (!Number.isSafeInteger(next?.revision) || next.revision <= revisionRef.current) return;
       revisionRef.current = next.revision;
-      nativePlaybackRevisionRef.current = next.revision;
+      playbackRevisionRef.current = next.revision;
       authoritativeStateRef.current = { ...authoritativeStateRef.current, ...next };
       setSyncStatus('synchronizing');
       stateAnchorRef.current.receivedAt = Date.now();
@@ -299,62 +299,67 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
   }, [messages]);
 
   // Playback control routing through backend-authorized socket events
-  const playback = (type, time = state.currentTime, expectedRevision) => {
+  const playback = (type, time = state.currentTime) => {
     if (!canControl || !socket?.connected) return;
     setSyncStatus('synchronizing');
-    socket.emit('playback', {
-      roomId: initial.roomId,
+    playbackQueueRef.current.push({
       type,
       time,
-      ...(expectedRevision === undefined ? {} : { expectedRevision }),
+      native: false,
     });
+    sendPlaybackQueueRef.current?.();
   };
 
-  sendNativePlaybackRef.current = () => {
+  sendPlaybackQueueRef.current = () => {
     if (
-      nativePlaybackInFlightRef.current ||
-      !nativePlaybackQueueRef.current.length ||
+      playbackInFlightRef.current ||
+      !playbackQueueRef.current.length ||
       !socket?.connected
     ) {
       return;
     }
 
-    const action = nativePlaybackQueueRef.current.shift();
-    nativePlaybackInFlightRef.current = true;
+    const action = playbackQueueRef.current.shift();
+    playbackInFlightRef.current = true;
+    const { native, ...playbackAction } = action;
     socket.emit(
       'playback',
       {
         roomId: initial.roomId,
-        ...action,
-        expectedRevision: nativePlaybackRevisionRef.current,
+        ...playbackAction,
+        ...(native ? { expectedRevision: playbackRevisionRef.current } : {}),
       },
       (result) => {
-        nativePlaybackInFlightRef.current = false;
+        playbackInFlightRef.current = false;
         if (result?.error) {
-          nativePlaybackQueueRef.current = [];
+          playbackQueueRef.current = [];
           setPlayerError(result.error);
           reconcilePlayerRef.current?.(authoritativeStateRef.current);
           return;
         }
         if (!Number.isSafeInteger(result?.state?.revision)) {
-          nativePlaybackQueueRef.current = [];
+          playbackQueueRef.current = [];
           setPlayerError('The server did not confirm the YouTube playback action.');
           reconcilePlayerRef.current?.(authoritativeStateRef.current);
           return;
         }
-        nativePlaybackRevisionRef.current = result.state.revision;
-        sendNativePlaybackRef.current?.();
+        playbackRevisionRef.current = Math.max(
+          playbackRevisionRef.current,
+          result.state.revision
+        );
+        sendPlaybackQueueRef.current?.();
       }
     );
   };
 
   const handleNativePlaybackChange = (isPlaying, time) => {
     if (!canControl || !socket?.connected) return;
-    nativePlaybackQueueRef.current.push({
+    playbackQueueRef.current.push({
       type: isPlaying ? 'play' : 'pause',
       time,
+      native: true,
     });
-    sendNativePlaybackRef.current?.();
+    sendPlaybackQueueRef.current?.();
   };
 
   const handlePlayPause = () => {

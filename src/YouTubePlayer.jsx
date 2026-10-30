@@ -94,6 +94,7 @@ export function YouTubePlayer({
 
     if (activeVideoId.current !== next.videoId) {
       activeVideoId.current = next.videoId;
+      programmaticCommands.current = [];
       beginPendingVideo(next, instance, next.isPlaying ? 'load' : 'cue');
       return;
     }
@@ -247,6 +248,8 @@ export function YouTubePlayer({
               const commandIndex = programmaticCommands.current.findIndex(
                 (command) =>
                   command.videoId === (reportedVideoId || activeVideoId.current) &&
+                  command.revision === next.revision &&
+                  (command.playerState === 1) === next.isPlaying &&
                   command.playerState === event.data
               );
               if (commandIndex !== -1) {

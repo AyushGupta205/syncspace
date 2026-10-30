@@ -193,10 +193,10 @@ test('playback controls, role changes, and reconnection preserve the player inst
       window.__youtubePlayers.at(-1).nativePlay();
       window.__youtubePlayers.at(-1).nativePause();
     });
-    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(2);
-    await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(2);
+    await expect(guestPage.locator('.playback-status-pill strong')).toHaveText('PAUSED');
 
     await hostPage.evaluate(() => window.__youtubePlayers.at(-1).nativePlay());
+    await expect(guestPage.locator('.playback-status-pill strong')).toHaveText('PLAYING');
     await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
     await hostPage.getByRole('button', { name: 'Forward 10 seconds' }).click();
     await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).time)).toBeGreaterThanOrEqual(10);
@@ -246,9 +246,9 @@ test('playback controls, role changes, and reconnection preserve the player inst
       .toHaveCSS('pointer-events', 'auto');
 
     await guestPage.evaluate(() => window.__youtubePlayers.at(-1).nativePlay());
-    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+    await expect(hostPage.locator('.playback-status-pill strong')).toHaveText('PLAYING');
     await guestPage.evaluate(() => window.__youtubePlayers.at(-1).nativePause());
-    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(2);
+    await expect(hostPage.locator('.playback-status-pill strong')).toHaveText('PAUSED');
 
     await guestPage.reload();
     await expect(guestPage.locator('.person-row').filter({ hasText: 'GuestUser' }).locator('.role-badge'))
@@ -344,9 +344,9 @@ test('playback controls, role changes, and reconnection preserve the player inst
     await expect(guestPage.locator('.person-row').filter({ hasText: 'GuestUser' }).locator('.role-badge'))
       .toHaveText('Host');
     await guestPage.evaluate(() => window.__youtubePlayers.at(-1).nativePlay());
-    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+    await expect(hostPage.locator('.playback-status-pill strong')).toHaveText('PLAYING');
     await guestPage.evaluate(() => window.__youtubePlayers.at(-1).nativePause());
-    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(2);
+    await expect(hostPage.locator('.playback-status-pill strong')).toHaveText('PAUSED');
     await expect(hostPage.getByText('In sync')).toBeVisible();
     expect(await hostPage.evaluate(() => window.__youtubePlayerCount)).toBe(hostPlayerCount);
   } finally {
