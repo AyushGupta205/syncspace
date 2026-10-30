@@ -26,9 +26,10 @@ export class SocketEventHandler {
     this.playbackRequestTimers = new Map();
   }
 
-  reject(socket, message) {
+  reject(socket, message, reply) {
     this.metrics?.increment('rejectedActions');
     socket.emit('action_rejected', { message, error: message });
+    reply?.({ error: message });
   }
 
   payload(room, member) {
@@ -163,6 +164,7 @@ export class SocketEventHandler {
     const state = room.setState(update);
     this.metrics?.increment('playbackUpdates');
     this.io.to(room.id).emit('sync_state', state);
+    return state;
   }
 
   enter(socket, room, username, reply) {
@@ -190,38 +192,49 @@ export class SocketEventHandler {
     });
   }
 
-  handlePlayback(socket, data = {}) {
+  handlePlayback(socket, data = {}, reply) {
     const room = this.roomManager.getRoom(data.roomId);
     if (!room?.getParticipant(socket.id)) {
-      return this.reject(socket, 'You are not a member of this room.');
+      return this.reject(socket, 'You are not a member of this room.', reply);
     }
     if (!room.hasControl(socket.id)) {
-      return this.reject(socket, 'Only a host or moderator can control playback.');
+      return this.reject(socket, 'Only a host or moderator can control playback.', reply);
+    }
+    if (data.expectedRevision !== undefined) {
+      const currentState = room.getState();
+      if (
+        !Number.isSafeInteger(data.expectedRevision) ||
+        data.expectedRevision !== currentState.revision
+      ) {
+        socket.emit('sync_state', currentState);
+        return this.reject(socket, 'Playback changed elsewhere. The latest room state was restored.', reply);
+      }
     }
     if (!this.messageHandler.checkRateLimit(socket.id, {
       event: 'playback',
       maxPerWindow: 20,
       windowMs: 2000,
     })) {
-      return this.reject(socket, 'Playback controls are being used too quickly.');
+      return this.reject(socket, 'Playback controls are being used too quickly.', reply);
     }
     if (!['play', 'pause', 'seek', 'video'].includes(data.type)) {
-      return this.reject(socket, 'Unknown playback action.');
+      return this.reject(socket, 'Unknown playback action.', reply);
     }
     if (data.type === 'video' && (typeof data.videoId !== 'string' || !VIDEO_ID.test(data.videoId))) {
-      return this.reject(socket, 'Invalid YouTube video ID.');
+      return this.reject(socket, 'Invalid YouTube video ID.', reply);
     }
 
     const targetTime = playbackTime(data) ?? room.getState().currentTime;
     if (data.type !== 'video' && (!Number.isFinite(targetTime) || targetTime < 0 || targetTime > 86400)) {
-      return this.reject(socket, 'Invalid playback position.');
+      return this.reject(socket, 'Invalid playback position.', reply);
     }
 
-    this.applyPlayback(room, {
+    const state = this.applyPlayback(room, {
       type: data.type,
       time: targetTime,
       videoId: data.videoId,
     });
+    reply?.({ state });
   }
 
   register(socket) {
@@ -339,7 +352,9 @@ export class SocketEventHandler {
     });
 
     // 5. Playback Handlers
-    socket.on('playback', (rawData = {}) => this.handlePlayback(socket, objectPayload(rawData)));
+    socket.on('playback', (rawData = {}, reply) =>
+      this.handlePlayback(socket, objectPayload(rawData), reply)
+    );
     socket.on('play', (rawData = {}) => {
       const data = objectPayload(rawData);
       this.handlePlayback(socket, {

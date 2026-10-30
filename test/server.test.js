@@ -50,6 +50,17 @@ test('room creation, authorization, synchronization, isolation, removal, and rec
   assert.match((await malformed).message, /Invalid playback position/);
   const syncedPlay = once(guest, 'sync_state'); host.emit('playback', { roomId: created.roomId, type: 'play', time: 12 });
   const played = await syncedPlay; assert.equal(played.videoId, VIDEO_A); assert.ok(Math.abs(played.currentTime - 12) < 0.1); assert.equal(played.isPlaying, true); assert.equal(played.revision, 1);
+  const staleRevisionState = once(host, 'sync_state');
+  const staleRevisionRejection = once(host, 'action_rejected');
+  host.emit('playback', {
+    roomId: created.roomId,
+    type: 'pause',
+    time: 12,
+    expectedRevision: 0,
+  });
+  assert.equal((await staleRevisionState).revision, 1);
+  assert.match((await staleRevisionRejection).message, /Playback changed elsewhere/);
+  assert.equal(rooms.get(created.roomId).getState().isPlaying, true);
   const activeRoom = rooms.get(created.roomId);
   activeRoom.state.updatedAt = Date.now() - 3500;
   assert.ok(activeRoom.getState().currentTime >= 15.4, 'playing room time should advance from its server anchor');

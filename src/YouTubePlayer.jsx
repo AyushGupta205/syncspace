@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 
 export function YouTubePlayer({
   state,
+  canControl,
   authoritativeStateRef,
   stateAnchorRef,
   playerRef,
@@ -9,6 +10,7 @@ export function YouTubePlayer({
   onTitleChange,
   onDurationChange,
   onPlayerStateChange,
+  onNativePlaybackChange,
   onLoadingChange,
   onError,
 }) {
@@ -18,6 +20,28 @@ export function YouTubePlayer({
   const activeVideoId = useRef('');
   const pendingVideo = useRef(null);
   const pendingVideoTimeout = useRef(null);
+  const canControlRef = useRef(canControl);
+  const nativePlaybackChangeRef = useRef(onNativePlaybackChange);
+  const programmaticCommands = useRef([]);
+  const lastProgrammaticCommand = useRef(null);
+  const nativeAction = useRef(null);
+  canControlRef.current = canControl;
+  nativePlaybackChangeRef.current = onNativePlaybackChange;
+
+  const setIframeInteraction = (iframe) => {
+    if (!iframe) return;
+    iframe.style.pointerEvents = canControlRef.current ? 'auto' : 'none';
+    iframe.tabIndex = canControlRef.current ? 0 : -1;
+    if (!canControlRef.current && document.activeElement === iframe) iframe.blur();
+  };
+
+  const recordProgrammaticCommand = (next, playerState) => {
+    programmaticCommands.current.push({
+      videoId: next.videoId,
+      revision: next.revision,
+      playerState,
+    });
+  };
 
   const clearPendingVideo = () => {
     clearTimeout(pendingVideoTimeout.current);
@@ -64,6 +88,9 @@ export function YouTubePlayer({
   const apply = (next) => {
     const instance = player.current;
     if (!ready.current || !instance) return;
+    if (nativeAction.current && next.revision > nativeAction.current.revision) {
+      nativeAction.current = null;
+    }
 
     if (activeVideoId.current !== next.videoId) {
       activeVideoId.current = next.videoId;
@@ -89,13 +116,27 @@ export function YouTubePlayer({
     const currentTime = instance.getCurrentTime?.() || 0;
     const playerState = instance.getPlayerState?.();
     if (playerState === -1 || playerState === 3) return;
+    const matchesAuthoritativePlayback = next.isPlaying
+      ? playerState === 1
+      : playerState === 2 || playerState === 5;
+    if (matchesAuthoritativePlayback) {
+      programmaticCommands.current = [];
+    }
     if (Math.abs(currentTime - expectedTime) > 1.5) {
       instance.seekTo(expectedTime, true);
     }
 
     if (next.isPlaying && playerState !== 1) {
+      const command = `${next.videoId}:${next.revision}:1`;
+      if (lastProgrammaticCommand.current === command) return;
+      lastProgrammaticCommand.current = command;
+      recordProgrammaticCommand(next, 1);
       instance.playVideo();
     } else if (!next.isPlaying && playerState !== 2 && playerState !== 5) {
+      const command = `${next.videoId}:${next.revision}:2`;
+      if (lastProgrammaticCommand.current === command) return;
+      lastProgrammaticCommand.current = command;
+      recordProgrammaticCommand(next, 2);
       instance.pauseVideo();
     }
   };
@@ -135,6 +176,7 @@ export function YouTubePlayer({
             if (iframe) {
               iframe.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen');
               iframe.setAttribute('allowfullscreen', 'true');
+              setIframeInteraction(iframe);
             }
             fetchMeta(event.target);
             reconcileRef.current = apply;
@@ -154,6 +196,14 @@ export function YouTubePlayer({
             ) {
               return;
             }
+            const playerState = instance?.getPlayerState?.();
+            if (
+              [1, 2, 5].includes(event?.data) &&
+              playerState !== event.data
+            ) {
+              apply(authoritativeStateRef.current);
+              return;
+            }
             const pending = pendingVideo.current;
             if (pending) {
               const eventVideoId = reportedVideoId || activeVideoId.current;
@@ -163,6 +213,11 @@ export function YouTubePlayer({
                 ((event?.data === 2 || event?.data === 5) && !pending.isPlaying)
               ) {
                 clearPendingVideo();
+                fetchMeta(instance);
+                onLoadingChange?.(false);
+                onPlayerStateChange?.(event.data === 1);
+                apply(authoritativeStateRef.current);
+                return;
               } else if (event?.data === 2 && pending.isPlaying) {
                 onLoadingChange?.(false);
                 onError?.('Your browser may have blocked autoplay. Use the YouTube player controls to start playback.');
@@ -179,16 +234,50 @@ export function YouTubePlayer({
             if (event?.data === 1) {
               onLoadingChange?.(false);
               onError?.('');
-              onPlayerStateChange?.(true);
-              apply(authoritativeStateRef.current);
             } else if (event?.data === 2) {
               onLoadingChange?.(false);
-              onPlayerStateChange?.(false);
-              apply(authoritativeStateRef.current);
             } else if (event?.data === -1 || event?.data === 3) {
               onLoadingChange?.(true);
             } else if (event?.data === 5) {
               onLoadingChange?.(false);
+            }
+
+            if (event?.data === 1 || event?.data === 2) {
+              const next = authoritativeStateRef.current;
+              const commandIndex = programmaticCommands.current.findIndex(
+                (command) =>
+                  command.videoId === (reportedVideoId || activeVideoId.current) &&
+                  command.playerState === event.data
+              );
+              if (commandIndex !== -1) {
+                programmaticCommands.current.splice(commandIndex, 1);
+                onPlayerStateChange?.(event.data === 1);
+                apply(next);
+                return;
+              }
+
+              const isPlaying = event.data === 1;
+              const currentIntent =
+                nativeAction.current?.revision === next.revision
+                  ? nativeAction.current.isPlaying
+                  : next.isPlaying;
+              if (isPlaying !== currentIntent && canControlRef.current) {
+                nativeAction.current = {
+                  revision: next.revision,
+                  isPlaying,
+                };
+                onPlayerStateChange?.(isPlaying);
+                nativePlaybackChangeRef.current?.(
+                  isPlaying,
+                  instance.getCurrentTime?.() ?? next.currentTime
+                );
+                return;
+              }
+
+              onPlayerStateChange?.(isPlaying);
+              apply(next);
+            } else if (event?.data === 5) {
+              apply(authoritativeStateRef.current);
             }
           },
           onError: (event) => {
@@ -248,6 +337,11 @@ export function YouTubePlayer({
       if (playerRef) playerRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    setIframeInteraction(player.current?.getIframe?.());
+    apply(authoritativeStateRef.current);
+  }, [canControl]);
 
   useEffect(() => {
     apply(authoritativeStateRef.current);

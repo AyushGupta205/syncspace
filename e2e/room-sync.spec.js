@@ -89,11 +89,22 @@ const stubPlayer = (readyDelay = 250) => {
         this.state = 2;
         this.emitState(2);
       }
+      nativePlay() {
+        this.state = 1;
+        this.emitState(1);
+      }
+      nativePause() {
+        this.state = 2;
+        this.emitState(2);
+      }
       scheduleState(state, delay) {
         setTimeout(() => {
           this.state = state;
           this.emitState(state);
         }, delay);
+      }
+      scheduleCallback(state, delay) {
+        setTimeout(() => this.emitState(state), delay);
       }
       destroy() { this.iframe.remove(); }
     },
@@ -166,12 +177,26 @@ test('playback controls, role changes, and reconnection preserve the player inst
     expect(await guestPage.evaluate(() => window.__youtubePlayerVars.controls)).toBe(1);
     expect(await guestPage.evaluate(() => window.__youtubePlayerVars.disablekb)).toBe(0);
     expect(await guestPage.locator('.youtube-player iframe').evaluate((iframe) => getComputedStyle(iframe).pointerEvents))
-      .toBe('auto');
+      .toBe('none');
     await expect(guestPage.locator('.video-container')).toHaveCSS('aspect-ratio', '16 / 9');
 
     await hostPage.getByRole('button', { name: 'Play synchronized playback' }).click();
     await expect(hostPage.getByRole('button', { name: 'Pause synchronized playback' })).toBeVisible();
     await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+    await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+
+    await guestPage.evaluate(() => window.__youtubePlayers.at(-1).nativePause());
+    await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+    await hostPage.evaluate(() => {
+      window.__youtubePlayers.at(-1).nativePause();
+      window.__youtubePlayers.at(-1).nativePlay();
+      window.__youtubePlayers.at(-1).nativePause();
+    });
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(2);
+    await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(2);
+
+    await hostPage.evaluate(() => window.__youtubePlayers.at(-1).nativePlay());
     await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
     await hostPage.getByRole('button', { name: 'Forward 10 seconds' }).click();
     await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).time)).toBeGreaterThanOrEqual(10);
@@ -219,6 +244,12 @@ test('playback controls, role changes, and reconnection preserve the player inst
     expect(await guestPage.evaluate(() => window.__youtubePlayerCount)).toBe(guestPlayerCount);
     await expect(guestPage.locator('.youtube-player iframe'))
       .toHaveCSS('pointer-events', 'auto');
+
+    await guestPage.evaluate(() => window.__youtubePlayers.at(-1).nativePlay());
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+    await guestPage.evaluate(() => window.__youtubePlayers.at(-1).nativePause());
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(2);
+
     await guestPage.reload();
     await expect(guestPage.locator('.person-row').filter({ hasText: 'GuestUser' }).locator('.role-badge'))
       .toHaveText('Moderator');
@@ -268,7 +299,7 @@ test('playback controls, role changes, and reconnection preserve the player inst
     }), guestCallsBeforePlay)).toEqual({ play: 1, pause: 0 });
 
     await hostPage.evaluate(() => {
-      window.__youtubePlayers.at(-1).scheduleState(2, 3500);
+      window.__youtubePlayers.at(-1).scheduleCallback(2, 3500);
     });
     await hostPage.waitForTimeout(3600);
     await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
@@ -279,7 +310,7 @@ test('playback controls, role changes, and reconnection preserve the player inst
     await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(2);
 
     await hostPage.evaluate(() => {
-      window.__youtubePlayers.at(-1).scheduleState(1, 500);
+      window.__youtubePlayers.at(-1).scheduleCallback(1, 500);
     });
     await guestPage.getByRole('button', { name: 'Play synchronized playback' }).click();
     await expect(guestPage.getByRole('button', { name: 'Pause synchronized playback' })).toBeVisible();
@@ -312,6 +343,10 @@ test('playback controls, role changes, and reconnection preserve the player inst
       .toHaveText('Participant');
     await expect(guestPage.locator('.person-row').filter({ hasText: 'GuestUser' }).locator('.role-badge'))
       .toHaveText('Host');
+    await guestPage.evaluate(() => window.__youtubePlayers.at(-1).nativePlay());
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+    await guestPage.evaluate(() => window.__youtubePlayers.at(-1).nativePause());
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(2);
     await expect(hostPage.getByText('In sync')).toBeVisible();
     expect(await hostPage.evaluate(() => window.__youtubePlayerCount)).toBe(hostPlayerCount);
   } finally {

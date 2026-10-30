@@ -41,6 +41,10 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
   const stateAnchorRef = useRef({ receivedAt: Date.now() });
   const revisionRef = useRef(initial.state.revision || 0);
   const authoritativeStateRef = useRef(initial.state);
+  const nativePlaybackQueueRef = useRef([]);
+  const nativePlaybackInFlightRef = useRef(false);
+  const nativePlaybackRevisionRef = useRef(initial.state.revision || 0);
+  const sendNativePlaybackRef = useRef(null);
 
   const self = useMemo(
     () => people.find((p) => p.id === initial.self.id) || initial.self,
@@ -51,6 +55,7 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
   useEffect(() => {
     stateAnchorRef.current.receivedAt = Date.now();
     revisionRef.current = initial.state.revision || 0;
+    nativePlaybackRevisionRef.current = initial.state.revision || 0;
     authoritativeStateRef.current = initial.state;
     setState(initial.state);
     setPlayerLoading(Boolean(initial.state.videoId));
@@ -99,6 +104,8 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
 
     const onDisconnect = () => {
       setSyncStatus('connection_lost');
+      nativePlaybackQueueRef.current = [];
+      nativePlaybackInFlightRef.current = false;
     };
 
     const onConnectError = () => {
@@ -108,6 +115,7 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
     const onSyncState = (next) => {
       if (!Number.isSafeInteger(next?.revision) || next.revision <= revisionRef.current) return;
       revisionRef.current = next.revision;
+      nativePlaybackRevisionRef.current = next.revision;
       authoritativeStateRef.current = { ...authoritativeStateRef.current, ...next };
       setSyncStatus('synchronizing');
       stateAnchorRef.current.receivedAt = Date.now();
@@ -291,10 +299,62 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
   }, [messages]);
 
   // Playback control routing through backend-authorized socket events
-  const playback = (type, time = state.currentTime) => {
+  const playback = (type, time = state.currentTime, expectedRevision) => {
     if (!canControl || !socket?.connected) return;
     setSyncStatus('synchronizing');
-    socket.emit('playback', { roomId: initial.roomId, type, time });
+    socket.emit('playback', {
+      roomId: initial.roomId,
+      type,
+      time,
+      ...(expectedRevision === undefined ? {} : { expectedRevision }),
+    });
+  };
+
+  sendNativePlaybackRef.current = () => {
+    if (
+      nativePlaybackInFlightRef.current ||
+      !nativePlaybackQueueRef.current.length ||
+      !socket?.connected
+    ) {
+      return;
+    }
+
+    const action = nativePlaybackQueueRef.current.shift();
+    nativePlaybackInFlightRef.current = true;
+    socket.emit(
+      'playback',
+      {
+        roomId: initial.roomId,
+        ...action,
+        expectedRevision: nativePlaybackRevisionRef.current,
+      },
+      (result) => {
+        nativePlaybackInFlightRef.current = false;
+        if (result?.error) {
+          nativePlaybackQueueRef.current = [];
+          setPlayerError(result.error);
+          reconcilePlayerRef.current?.(authoritativeStateRef.current);
+          return;
+        }
+        if (!Number.isSafeInteger(result?.state?.revision)) {
+          nativePlaybackQueueRef.current = [];
+          setPlayerError('The server did not confirm the YouTube playback action.');
+          reconcilePlayerRef.current?.(authoritativeStateRef.current);
+          return;
+        }
+        nativePlaybackRevisionRef.current = result.state.revision;
+        sendNativePlaybackRef.current?.();
+      }
+    );
+  };
+
+  const handleNativePlaybackChange = (isPlaying, time) => {
+    if (!canControl || !socket?.connected) return;
+    nativePlaybackQueueRef.current.push({
+      type: isPlaying ? 'play' : 'pause',
+      time,
+    });
+    sendNativePlaybackRef.current?.();
   };
 
   const handlePlayPause = () => {
@@ -523,6 +583,7 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
             {state.videoId ? (
               <YouTubePlayer
                 state={state}
+                canControl={canControl && Boolean(socket?.connected)}
                 authoritativeStateRef={authoritativeStateRef}
                 stateAnchorRef={stateAnchorRef}
                 playerRef={playerRef}
@@ -530,6 +591,7 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
                 onTitleChange={setVideoTitle}
                 onDurationChange={setDuration}
                 onPlayerStateChange={(isPlaying) => setActualPlaying(isPlaying)}
+                onNativePlaybackChange={handleNativePlaybackChange}
                 onLoadingChange={setPlayerLoading}
                 onError={(errText) => setPlayerError(errText)}
               />
