@@ -395,6 +395,7 @@ test('playback controls, role changes, and reconnection preserve the player inst
     await guestPage.evaluate(() => window.__youtubePlayers.at(-1).nativePlay());
     await expect(hostPage.locator('.playback-status-pill strong')).toHaveText('PLAYING');
     await guestPage.evaluate(() => window.__youtubePlayers.at(-1).nativePause());
+    await expect(hostPage.locator('.playback-status-pill strong')).toHaveText('PAUSED');
     const hostStatus = await hostPage.locator('.playback-status-pill strong').textContent();
     const hostPlayerState = await hostPage.evaluate(() => {
       const player = window.__youtubePlayers.at(-1);

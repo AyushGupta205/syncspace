@@ -5,6 +5,7 @@ const frontendOrigin = 'http://127.0.0.1:5180';
 
 export default defineConfig({
   testDir: './e2e',
+  retries: process.env.CI ? 2 : 0,
   use: {
     baseURL: frontendOrigin,
     browserName: 'chromium',
