@@ -165,7 +165,7 @@ SyncSpace integrates a persistent SQLite storage layer (`server/db.js` using Nod
 
 ## Scalability & Redis Multi-Instance Roadmap
 
-The current architecture easily handles 100+ active rooms and 1,000+ concurrent connections on a single Node process. When scaling horizontally across multiple cloud instances or container replicas:
+Tested with 50 concurrent Socket.IO clients across 5 independent rooms. Larger-scale capacity has not yet been benchmarked. When scaling horizontally across multiple cloud instances or container replicas:
 
 ```text
                ┌─────────────────────────────────────┐
@@ -231,8 +231,8 @@ The current architecture easily handles 100+ active rooms and 1,000+ concurrent 
 
 ### 1. Clone & Install Dependencies
 ```bash
-git clone https://github.com/your-username/syncspace-watch-party.git
-cd syncspace-watch-party
+git clone https://github.com/AyushGupta205/syncspace.git
+cd syncspace
 npm install
 ```
 
@@ -295,7 +295,7 @@ SyncSpace requires a persistent Node process for WebSocket connections. Deploy a
    - `NODE_ENV`: `production`
    - `CLIENT_ORIGIN`: `https://your-app-name.onrender.com` *(or comma-separated list of allowed origins)*
    - `PORT`: `10000` *(Render sets this automatically)*
-   - `DB_PATH`: `/var/data/syncspace.db` *(Optional: attach a Render Persistent Disk mounted at `/var/data` for persistent SQLite across deploys)*
+   - `DB_PATH`: `/data/syncspace.db` *(Attach a Render Persistent Disk mounted at `/data` as configured in `render.yaml` for persistent SQLite across deploys)*
 5. Click **Create Web Service**. Verify health endpoint at `https://your-app-name.onrender.com/api/health`.
 
 ### Deploying to Railway
