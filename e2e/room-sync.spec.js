@@ -56,12 +56,14 @@ test('playback controls, role changes, and reconnection preserve the player inst
           this.state = 2;
           this.time = 0;
           window.__youtubePlayerCount = (window.__youtubePlayerCount || 0) + 1;
+          window.__youtubePlayers = window.__youtubePlayers || [];
+          window.__youtubePlayers.push(this);
           window.__youtubePlayerVars = options.playerVars;
           this.iframe = document.createElement('iframe');
           this.iframe.title = 'Mock YouTube player';
           this.iframe.dataset.videoId = options.videoId;
           element.replaceChildren(this.iframe);
-          setTimeout(() => options.events.onReady({ target: this }), 0);
+          setTimeout(() => options.events.onReady({ target: this }), 250);
         }
 
         getCurrentTime() { return this.time; }
@@ -95,7 +97,9 @@ test('playback controls, role changes, and reconnection preserve the player inst
     await hostPage.getByLabel(/YouTube URL or Video ID/).fill(VIDEO_A);
     await hostPage.getByRole('button', { name: 'Start a Watch Party' }).click();
     await expect(hostPage.locator('.room-code-pill .code-string')).toBeVisible();
+    await expect(hostPage.locator('.player-loading-overlay')).toBeVisible();
     await expect(hostPage.locator('.youtube-player iframe')).toHaveCount(1);
+    await expect(hostPage.locator('.player-loading-overlay')).toHaveCount(0);
     const hostPlayerCount = await hostPage.evaluate(() => window.__youtubePlayerCount);
     const roomCode = await hostPage.locator('.room-code-pill .code-string').textContent();
 
@@ -103,9 +107,25 @@ test('playback controls, role changes, and reconnection preserve the player inst
     await guestPage.getByLabel(/Display name/).fill('GuestUser');
     await guestPage.getByRole('button', { name: 'Join Room' }).click();
     await expect(guestPage.locator('.person-row').filter({ hasText: 'GuestUser' })).toBeVisible();
-    expect(await guestPage.evaluate(() => window.__youtubePlayerVars.controls)).toBe(0);
+    expect(await guestPage.evaluate(() => window.__youtubePlayerVars.controls)).toBe(1);
+    expect(await guestPage.evaluate(() => window.__youtubePlayerVars.disablekb)).toBe(0);
     expect(await guestPage.locator('.youtube-player iframe').evaluate((iframe) => getComputedStyle(iframe).pointerEvents))
-      .toBe('none');
+      .toBe('auto');
+    await expect(guestPage.locator('.video-container')).toHaveCSS('aspect-ratio', '16 / 9');
+
+    await hostPage.getByRole('button', { name: 'Play synchronized playback' }).click();
+    await expect(hostPage.getByRole('button', { name: 'Pause synchronized playback' })).toBeVisible();
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+    await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+    await hostPage.getByRole('button', { name: 'Forward 10 seconds' }).click();
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).time)).toBeGreaterThanOrEqual(10);
+    await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).time)).toBeGreaterThanOrEqual(10);
+    expect(await hostPage.evaluate(() => window.__youtubePlayers.at(-1).time)).toBeLessThan(11);
+    expect(await guestPage.evaluate(() => window.__youtubePlayers.at(-1).time)).toBeLessThan(11);
+    await hostPage.getByRole('button', { name: 'Pause synchronized playback' }).click();
+    await expect(hostPage.getByRole('button', { name: 'Play synchronized playback' })).toBeVisible();
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(2);
+    await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(2);
 
     await guestPage.getByRole('button', { name: 'Request a change' }).click();
     await guestPage.getByLabel('Change to request').selectOption('video');
@@ -121,7 +141,7 @@ test('playback controls, role changes, and reconnection preserve the player inst
     await expect(guestPage.locator('.person-row').filter({ hasText: 'GuestUser' }).locator('.role-badge'))
       .toHaveText('Participant');
     await expect(hostPage.locator('.person-row').filter({ hasText: 'GuestUser' })).toHaveCount(1);
-    expect(await guestPage.evaluate(() => window.__youtubePlayerVars.controls)).toBe(0);
+    expect(await guestPage.evaluate(() => window.__youtubePlayerVars.controls)).toBe(1);
     const guestPlayerCount = await guestPage.evaluate(() => window.__youtubePlayerCount);
     expect(guestPlayerCount).toBeGreaterThan(0);
 

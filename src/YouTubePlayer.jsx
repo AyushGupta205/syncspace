@@ -9,6 +9,7 @@ export function YouTubePlayer({
   onTitleChange,
   onDurationChange,
   onPlayerStateChange,
+  onLoadingChange,
   onError,
 }) {
   const mount = useRef(null);
@@ -26,6 +27,7 @@ export function YouTubePlayer({
 
     if (activeVideoId.current !== next.videoId) {
       activeVideoId.current = next.videoId;
+      onLoadingChange?.(true);
       const elapsed = next.isPlaying
         ? Math.max(0, Date.now() - stateAnchorRef.current.receivedAt) / 1000
         : 0;
@@ -80,8 +82,8 @@ export function YouTubePlayer({
       player.current = new window.YT.Player(mount.current, {
         videoId: latestState.current.videoId,
         playerVars: {
-          controls: 0,
-          disablekb: 1,
+          controls: 1,
+          disablekb: 0,
           fs: 1,
           rel: 0,
           modestbranding: 1,
@@ -92,11 +94,11 @@ export function YouTubePlayer({
         events: {
           onReady: (event) => {
             ready.current = true;
+            onLoadingChange?.(false);
             onError?.('');
             if (playerRef) playerRef.current = event.target;
             const iframe = event.target?.getIframe?.();
             if (iframe) {
-              iframe.style.pointerEvents = latestCanControl.current ? 'auto' : 'none';
               iframe.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen');
               iframe.setAttribute('allowfullscreen', 'true');
             }
@@ -110,6 +112,7 @@ export function YouTubePlayer({
             const hasControl = latestCanControl.current;
 
             if (event?.data === 1) {
+              onLoadingChange?.(false);
               onPlayerStateChange?.(true);
               if (hasControl && !curState.isPlaying) {
                 onSharedPlayback?.('play', instance.getCurrentTime?.() ?? curState.currentTime);
@@ -117,15 +120,21 @@ export function YouTubePlayer({
                 instance.pauseVideo();
               }
             } else if (event?.data === 2) {
+              onLoadingChange?.(false);
               onPlayerStateChange?.(false);
               if (hasControl && curState.isPlaying) {
                 onSharedPlayback?.('pause', instance.getCurrentTime?.() ?? curState.currentTime);
               } else if (!hasControl && curState.isPlaying) {
                 instance.playVideo();
               }
+            } else if (event?.data === -1 || event?.data === 3) {
+              onLoadingChange?.(true);
+            } else if (event?.data === 5) {
+              onLoadingChange?.(false);
             }
           },
           onError: (event) => {
+            onLoadingChange?.(false);
             let errorText = 'YouTube encountered an error loading this video.';
             if (event?.data === 150 || event?.data === 101) {
               errorText = 'The video owner has disabled playback in embedded players. Please choose another public video.';
@@ -155,7 +164,10 @@ export function YouTubePlayer({
       const script = document.createElement('script');
       script.src = 'https://www.youtube.com/iframe_api';
       script.dataset.youtubeApi = 'true';
-      script.onerror = () => onError?.('Unable to load the YouTube player. Check your connection and try again.');
+      script.onerror = () => {
+        onLoadingChange?.(false);
+        onError?.('Unable to load the YouTube player. Check your connection and try again.');
+      };
       document.head.appendChild(script);
     }
 
@@ -167,11 +179,6 @@ export function YouTubePlayer({
       if (playerRef) playerRef.current = null;
     };
   }, []);
-
-  useEffect(() => {
-    const iframe = player.current?.getIframe?.();
-    if (iframe) iframe.style.pointerEvents = canControl ? 'auto' : 'none';
-  }, [canControl]);
 
   useEffect(() => {
     apply(state);

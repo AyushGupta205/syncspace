@@ -11,6 +11,7 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
   const [text, setText] = useState('');
   const [chatError, setChatError] = useState('');
   const [playerError, setPlayerError] = useState('');
+  const [playerLoading, setPlayerLoading] = useState(Boolean(initial.state.videoId));
   const [videoTitle, setVideoTitle] = useState('');
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(initial.state.currentTime || 0);
@@ -49,6 +50,7 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
     stateAnchorRef.current.receivedAt = Date.now();
     revisionRef.current = initial.state.revision || 0;
     setState(initial.state);
+    setPlayerLoading(Boolean(initial.state.videoId));
     setActualPlaying(initial.state.isPlaying);
     setPeople(initial.participants);
     setPendingPlaybackRequests(initial.pendingPlaybackRequests || []);
@@ -522,6 +524,7 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
                 onTitleChange={setVideoTitle}
                 onDurationChange={setDuration}
                 onPlayerStateChange={(isPlaying) => setActualPlaying(isPlaying)}
+                onLoadingChange={setPlayerLoading}
                 onError={(errText) => setPlayerError(errText)}
               />
             ) : (
@@ -529,6 +532,13 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
                 <div className="empty-icon" aria-hidden="true">◉</div>
                 <h2>Choose a video to start</h2>
                 <p>Paste any YouTube URL or 11-character video ID below to start synchronized playback.</p>
+              </div>
+            )}
+
+            {playerLoading && state.videoId && (
+              <div className="player-loading-overlay" role="status" aria-live="polite">
+                <span className="player-loading-spinner" aria-hidden="true" />
+                <span>Loading YouTube player…</span>
               </div>
             )}
 
