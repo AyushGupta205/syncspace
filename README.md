@@ -21,12 +21,11 @@ SyncSpace is a real-time YouTube watch-party application. Create a room, invite 
 - [Deployment](#deployment)
 - [Future scalability roadmap](#future-scalability-roadmap)
 - [Known limitations](#known-limitations)
-- [Official Web3Task assignment compliance](#official-web3task-assignment-compliance)
 
 ## Features
 
 - Six-character room codes with collision avoidance and shareable `?room=CODE` links.
-- Embedded YouTube playback with native player controls for Hosts and Moderators, plus synchronized SyncSpace controls.
+- Embedded YouTube playback with native Play/Pause for Hosts and Moderators, plus synchronized SyncSpace playback and timeline controls.
 - Participant playback requests for play, pause, seek, or video changes, subject to Host/Moderator approval.
 - Host-managed roles, participant removal, and Host transfer.
 - Live chat, system messages, and synchronized emoji reactions.
@@ -89,11 +88,11 @@ Participants can submit playback requests; only a connected Host or Moderator ca
 
 The room's server state is authoritative. It includes the video ID, play/pause state, timeline, update timestamp, and monotonically increasing revision. While playing, the server derives the current position from its timestamp and broadcasts state changes as `sync_state`.
 
-- **Native Play/Pause:** The YouTube IFrame API reports player state changes but does not conclusively identify whether a callback came from a user or a programmatic command. The client compares the actual player state with the latest authoritative state, current video, and revision before deciding whether an authorized native action should be queued. Programmatic callbacks are reconciled rather than broadcast as new shared commands.
-- **Custom Play/Pause and seek:** Native Play/Pause intents and SyncSpace Play/Pause/seek actions use a client-side serialized queue. Each action is sent to the server, which validates the role and payload, advances the room revision, and broadcasts the resulting state. Native actions additionally carry an expected revision; stale requests are rejected and the latest room state is returned.
+- **Native Play/Pause:** The YouTube IFrame API reports player state changes but does not conclusively identify whether a callback came from a user or a programmatic command. The client compares actual player state with the latest authoritative state and revision; pending programmatic commands are retained across revisions and video changes so delayed callbacks are reconciled rather than broadcast as new shared commands.
+- **Custom Play/Pause and seek:** Native Play/Pause intents and SyncSpace Play/Pause/seek actions (timeline slider and ±10-second buttons) use a client-side serialized queue. Each action is sent to the server, which validates the role and payload, advances the room revision, and broadcasts the resulting state. Native actions additionally carry an expected revision; stale requests are rejected and the latest room state is returned.
 - **Video changes:** The SyncSpace video-change action is validated and applied by the server. The room revision advances, and clients load or cue the new video according to the authoritative play state. Changing video preserves whether the room was playing or paused.
-- **Stale callbacks and drift:** Player callbacks are reconciled against the latest authoritative state; stale revisions are ignored. Clients periodically compare player time with the server timeline and correct drift greater than 1.5 seconds.
-- **Native seek:** The implementation does not convert the YouTube seek-bar interaction into a shared seek action. Use SyncSpace's `−10s` and `+10s` controls for synchronized seeking. Periodic reconciliation may move a locally scrubbed player back toward the room timeline.
+- **Stale callbacks and drift:** Player callbacks are reconciled against the latest authoritative state; older server revisions cannot replace newer state, and delayed programmatic callbacks do not create shared playback commands. Clients periodically compare player time with the server timeline and correct drift greater than 1.5 seconds.
+- **Native seek:** The implementation does not convert the YouTube seek-bar interaction into a shared seek action. Hosts and Moderators can use the SyncSpace timeline slider or `−10s` / `+10s` controls to seek the room. Periodic reconciliation may move a locally scrubbed YouTube player back toward the room timeline.
 - **Role-aware player interaction:** Native controls are enabled (`controls: 1`). Pointer interaction with the iframe is disabled for Participants and enabled for Hosts/Moderators without recreating the player on role changes. The IFrame API is configured with `disablekb: 0`; keyboard shortcuts are not described as disabled. The backend remains authoritative regardless of client-side interaction.
 
 Synchronization is best-effort, not frame-accurate. Network latency, buffering, YouTube player delays, autoplay restrictions, and browser behavior can affect when playback changes appear.
@@ -194,9 +193,9 @@ npm run load-test -- 100
 - **Unit/integration tests (`npm test`):** Node's test runner covers server/socket behavior, persistence and recovery, role enforcement, playback revisions, validation, and URL parsing.
 - **Browser E2E (`npm run test:e2e`):** Playwright starts isolated server/client processes and mocks the YouTube IFrame API. These tests cover browser flows such as roles, requests, playback synchronization, video changes, and session recovery; they do not prove behavior against YouTube's real player.
 - **Load check (`npm run load-test -- 100`):** Simulates the requested number of Socket.IO participants (1–1,000) against a local in-memory server and reports join and playback-broadcast latency. Results are not production capacity guarantees.
-- **Real-browser playback:** The latest attempt (2026-10-30) used a local Node server and two browser pages. Both loaded the real YouTube IFrame for Big Buck Bunny, but Chrome 150 reported `HTML5 player error` / `html5.missingapi`, so actual media playback could not be verified. The pages observed synchronized custom Play/Pause room status; that is not proof of media playback. This is separate from the mocked E2E suite and is not performed by the commands above.
+- **Real-browser playback:** The latest attempt (2026-10-30) used the public Render application and two browser sessions. Both joined the same room and the real YouTube IFrame loaded, but Chrome 150 reported `html5.missingapi` / `nocodecs.1`; actual media playback and native YouTube controls could not be verified. Room membership and synchronized status are not proof of media playback. This is separate from the mocked E2E suite and is not performed by the commands above.
 
-The playback-fix validation recorded at the time was: unit/integration tests 12/12 passed, production build passed, and E2E 3/3 passed twice consecutively. In the 2026-10-30 repository audit, `npm ci` completed with no reported dependency vulnerabilities, `npm test` passed 14/14, `npm run build` passed, `npm run test:e2e` passed 6/6, `npm run load-test -- 100` joined all 100 simulated clients, and `git diff --check` passed. Playwright uses a mocked IFrame API; the latest real-browser attempt did not verify native media playback.
+Latest validation in this audit: `npm ci` completed with no reported dependency vulnerabilities; `npm test` passed 14/14; `npm run build` passed; `npm run test:e2e` passed 8/8; `npm run load-test -- 100` joined all 100 simulated clients; and `git diff --check` passed. The E2E suite mocks the YouTube IFrame API. The latest real-browser attempt did not verify native media playback.
 
 The GitHub Actions workflow runs dependency installation, Playwright browser installation, unit/integration tests, E2E tests, a 250-client load check, and the production build on pushes and pull requests.
 
@@ -205,7 +204,7 @@ The GitHub Actions workflow runs dependency installation, Playwright browser ins
 | Endpoint | Behavior |
 |---|---|
 | `GET /api/health` | Reports health, persistence status, active rooms/connections, uptime, and timestamp. In production, unavailable or degraded persistence returns HTTP 503. |
-| `GET /api/metrics` | Returns aggregate process counters. In production, the route is unavailable unless `METRICS_TOKEN` is configured; when configured, authorize the request with its Bearer token. |
+| `GET /api/metrics` | Returns aggregate process counters. In production, the route is unavailable unless `METRICS_TOKEN` is configured; when configured, send `Authorization: Bearer <METRICS_TOKEN>`. |
 
 The metrics endpoint does not include room or participant identifiers. Server lifecycle and SQLite failures are emitted as structured JSON log events.
 
@@ -238,70 +237,6 @@ The local load-test script can help compare changes in a controlled environment;
 - YouTube videos may disallow embedding or playback in an iframe (including errors 101/150), be unavailable, or require browser/user action.
 - Autoplay can be blocked by browser policy; synchronization cannot force playback when the browser requires a user gesture.
 - Native YouTube Play/Pause state changes can be observed, but the IFrame API does not conclusively identify whether a callback was user-generated or programmatic. The client reconciles callbacks against authoritative room state and revision; this is best-effort arbitration.
-- Native YouTube seek-bar actions are not submitted as shared seek commands. Use SyncSpace's seek controls for synchronized seeking.
+- Native YouTube seek-bar gestures are not submitted as shared seek commands. Hosts and Moderators should use the SyncSpace timeline slider or seek buttons for synchronized seeking.
 - Playback synchronization is not frame-accurate and depends on network, buffering, and player latency.
 - The server is single-instance today. Render Free-tier SQLite storage is ephemeral; use durable storage for persistence across service restarts.
-
-<a id="official-web3task-assignment-compliance"></a>
-## 17. Official Web3Task Assignment Compliance — Mandatory Evaluation
-
-This section evaluates SyncSpace against the original YouTube Watch Party assignment. It separates application-level behavior verified by tests from actual YouTube media behavior, which was not verified in the latest browser attempt.
-
-**Status meanings:** **PASS** means the requirement is implemented and supported by source/tests at the application level. **NOT TESTED** means real YouTube media behavior or the current production release was not confirmed. **FAIL** means current evidence conflicts with the requirement. Passing mocked-player or server-state tests does not establish that YouTube media actually played.
-
-### Mandatory core requirements
-
-| Requirement | Status | Source / evidence | Correction needed |
-|---|---|---|:---:|
-| Create a watch-party room | PASS | `server/SocketEventHandler.js` (`create_room`); `server/RoomManager.js`; `test/server.test.js` | No |
-| Join by unique room code or shareable link | PASS | `server/SocketEventHandler.js` (`join_room`); `src/App.jsx` handles `?room=CODE`; `e2e/room-sync.spec.js` | No |
-| Creator automatically becomes Host | PASS | `server/Room.js` host assignment; `server/SocketEventHandler.js`; server integration tests | No |
-| New participants default to Participant | PASS | `server/Room.js` / `server/Participant.js`; server integration tests | No |
-| Real-time synchronization of YouTube media for multiple viewers | NOT TESTED | E2E mocks the IFrame API; the latest two-browser real-player attempt reported `HTML5 player error` / `html5.missingapi` | Yes — verify in a browser with working YouTube media playback |
-| Play/Pause synchronization | PASS (room state); media NOT TESTED | Authorized actions update server state/revisions and broadcast `sync_state`; `test/server.test.js` and mocked-player E2E pass | Yes — confirm actual media playback across browsers |
-| Seek synchronization | PASS (SyncSpace controls / room state); media NOT TESTED | `seek` is server-validated and revisioned; custom ±10-second controls submit shared seeks; `test/server.test.js` | Yes — verify actual player positions and drift with playable media |
-| Current video synchronization and video changes | PASS (room state / mocked player); media NOT TESTED | `change_video` updates authoritative room state while preserving play/pause; `test/server.test.js` and `e2e/room-sync.spec.js` | Yes — verify actual video loads and playback on multiple clients |
-| Bidirectional WebSocket communication | PASS | Socket.IO setup in `server/index.js`; event handlers in `server/SocketEventHandler.js`; integration tests | No |
-| Backend-enforced role-based authorization | PASS | `server/SocketEventHandler.js` checks room membership and role for playback and management actions; server integration tests | No |
-| Host assigns Moderator permissions | PASS | `assign_role` is Host-only and broadcasts participant/role updates; `test/server.test.js` | No |
-| Host removes participants | PASS | `remove_participant` is Host-only; removal notification and test coverage in `server/SocketEventHandler.js` and `test/server.test.js` | No |
-| Host and Moderator can control playback | PASS (authorization / app state); media NOT TESTED | `Room.hasControl`; server playback handlers; native Play/Pause intents and SyncSpace controls are covered by mocked-player tests | Yes — confirm actual YouTube playback controls in a supported browser |
-| Participants cannot directly change shared playback or video | PASS | Server rejects Participant playback mutations; iframe pointer interaction is disabled for Participants; `test/server.test.js` and `e2e/room-sync.spec.js` | No |
-| Role updates broadcast to room participants | PASS | `role_assigned` and `participants_updated` broadcasts in `server/SocketEventHandler.js`; integration/E2E coverage | No |
-| Participant list displays usernames and roles | PASS | `src/Room.jsx` renders roster; participant updates are sent by `server/SocketEventHandler.js`; E2E coverage | No |
-| Production deployment has working core functionality | FAIL for latest revision | Public health endpoint responds, but the live app served the older `index-CS5grYxF.js` bundle; public deployment evidence identifies an earlier commit, not `7fd1dc7`. Real media playback also remains unverified. | Yes — deploy the validated revision and retest core flows |
-| README provides setup instructions and live application URL | PASS | [Local development](#local-development), [Deployment](#deployment), and the live link at the top of this README | No |
-
-### Participant approval workflow
-
-This workflow is implemented as an additional feature, not as direct Participant playback permission. A Participant can request play, pause, seek, or a video change; a connected Host or Moderator must approve before the server applies the action. Requests are validated, rate-limited, and expire after two minutes. Server integration and mocked-browser tests cover request creation, approval/rejection, and resulting room-state changes. **Status: PASS at the application-state level; actual YouTube media response remains NOT TESTED.**
-
-Evidence: `server/SocketEventHandler.js` (`request_playback_change` and `resolve_playback_request`), `src/Room.jsx`, `test/server.test.js`, and `e2e/room-sync.spec.js`.
-
-### Optional features and bonus scope
-
-These features are not required to pass the core assignment. No additional infrastructure is implied by listing them.
-
-| Optional feature | Implementation status | Evidence / limitation |
-|---|---|---|
-| Chat and emoji reactions | Implemented | Socket handlers, validation/rate limits, and integration tests. |
-| Host transfer and succession | Implemented | Host-only transfer; disconnected Host succession is handled by `Room`; integration tests cover role/state behavior. |
-| Session recovery | Implemented | Private browser session token and 15-minute grace period; server tests cover replacement sockets and recovery. |
-| Persistent room state | Implemented with SQLite | SQLite restoration is covered locally; Render Free filesystem is ephemeral, so durability across sleep/redeploy is not guaranteed. |
-| Account authentication | Not implemented | Users provide display names; room session tokens support recovery but are not account authentication. |
-| Advanced/horizontal scalability | Not implemented | Room and rate-limit state are process-local. |
-| Redis Pub/Sub / multiple Socket.IO instances | Roadmap only | Redis adapter is not configured or deployed; shared room state would also be required. |
-| Load balancing | Not configured | Single-instance deployment; multi-instance session affinity and shared state are future work. |
-| 1,000+ users and 100+ rooms | Not certified | Load-test script supports up to 1,000 simulated participants in one local room. This is not a production benchmark or a 100-room capacity test. |
-
-### Technical walkthrough
-
-1. **Frontend:** `src/App.jsx` creates the Socket.IO client, handles room entry/session recovery, and mounts `src/Room.jsx`. Vite (`vite.config.js`) serves the React development app and builds the static client. `src/YouTubePlayer.jsx` owns the YouTube IFrame API player, role-aware pointer interaction, and reconciliation against authoritative room state.
-2. **Room and participant model:** `server/RoomManager.js` generates room codes and owns the in-process room map. `server/Room.js` stores playback state/revisions and participant membership/roles. `server/Participant.js` represents participant identity, role, socket binding, and recovery token.
-3. **Socket and authorization:** `server/index.js` configures Express and Socket.IO, HTTP health/metrics endpoints, and service wiring. `server/SocketEventHandler.js` validates room membership, roles, playback revisions, and room-management permissions before mutating state or broadcasting. `server/MessageHandler.js` validates and rate-limits chat and reactions.
-4. **YouTube command flow:** Authorized SyncSpace actions and native Play/Pause intents reach the server through Socket.IO. The client serializes playback actions; the server checks authorization and expected revisions, updates the authoritative room state, and broadcasts `sync_state`. Native YouTube callbacks do not expose a reliable origin identifier, so client reconciliation compares the actual player with the newest authoritative video/state/revision. Native seek-bar gestures are not synchronized; use the SyncSpace seek buttons.
-5. **Persistence and deployment:** `server/db.js` implements SQLite tables and recovery; `DB_PATH` selects the database file. `.env.example`, `render.yaml`, and `Dockerfile` describe runtime configuration. Render Free storage is ephemeral, and the public deployment must be updated separately from a successful GitHub push.
-
-### Assignment compliance summary
-
-Room creation/joining, role defaults, server-side RBAC, Host moderation, participant roster updates, Socket.IO communication, and the approval workflow are implemented and covered at the application/server level. Shared playback state, seek, and video changes are likewise implemented and tested with server or mocked-player coverage. Actual synchronized YouTube media playback remains **NOT TESTED** because the latest browser could not play the embedded media. The latest validated commit is **not confirmed deployed**; the live bundle was observed to be older. Therefore the project is **NOT READY TO SUBMIT** until the latest revision is deployed and verified and actual YouTube playback is confirmed in a suitable browser.

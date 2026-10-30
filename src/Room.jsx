@@ -3,6 +3,16 @@ import { videoIdFrom } from './videoId.js';
 import { YouTubePlayer } from './YouTubePlayer.jsx';
 import { ThemeToggle } from './ThemeToggle.jsx';
 
+const formatPlaybackTime = (value) => {
+  const totalSeconds = Math.max(0, Math.floor(value || 0));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+    : `${minutes}:${String(seconds).padStart(2, '0')}`;
+};
+
 export function Room({ socket, initial, leave, theme, toggleTheme }) {
   const [state, setState] = useState(initial.state);
   const [actualPlaying, setActualPlaying] = useState(initial.state.isPlaying);
@@ -15,6 +25,7 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
   const [videoTitle, setVideoTitle] = useState('');
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(initial.state.currentTime || 0);
+  const [seekPreview, setSeekPreview] = useState(null);
   const [copied, setCopied] = useState(false);
   const [isChangingVideo, setIsChangingVideo] = useState(false);
   const [showLeaveModal, setShowLeaveModal] = useState(false);
@@ -396,7 +407,13 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
   const handleSeek = (delta) => {
     const curTime = playerRef.current?.getCurrentTime?.() ?? state.currentTime;
     const maxDur = duration || playerRef.current?.getDuration?.() || 86400;
-    const target = Math.max(0, Math.min(maxDur, curTime + delta));
+    handleSeekTo(Math.max(0, Math.min(maxDur, curTime + delta)));
+  };
+
+  const handleSeekTo = (time) => {
+    const maxDur = duration || playerRef.current?.getDuration?.() || 86400;
+    const target = Math.max(0, Math.min(maxDur, Number(time)));
+    setSeekPreview(null);
     setCurrentTime(target);
     playback('seek', target);
   };
@@ -695,6 +712,38 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
               <h3 className="video-title-heading">
                 {videoTitle || `YouTube Video (${state.videoId})`}
               </h3>
+            </div>
+          )}
+
+          {state.videoId && canControl && (
+            <div className="playback-seek-control">
+              <span className="playback-time" aria-hidden="true">
+                {formatPlaybackTime(seekPreview ?? currentTime)}
+              </span>
+              <input
+                type="range"
+                min="0"
+                max={Math.max(1, Math.floor(duration || 1))}
+                step="1"
+                value={Math.min(
+                  Math.max(0, seekPreview ?? currentTime),
+                  Math.max(1, Math.floor(duration || 1))
+                )}
+                disabled={!duration || !socket?.connected}
+                aria-label="Seek synchronized playback"
+                aria-valuetext={`${formatPlaybackTime(seekPreview ?? currentTime)} of ${formatPlaybackTime(duration)}`}
+                onChange={(event) => setSeekPreview(Number(event.currentTarget.value))}
+                onPointerUp={(event) => handleSeekTo(event.currentTarget.value)}
+                onPointerCancel={() => setSeekPreview(null)}
+                onKeyUp={(event) => {
+                  if (['ArrowLeft', 'ArrowRight', 'PageDown', 'PageUp', 'Home', 'End'].includes(event.key)) {
+                    handleSeekTo(event.currentTarget.value);
+                  }
+                }}
+              />
+              <span className="playback-time" aria-hidden="true">
+                {formatPlaybackTime(duration)}
+              </span>
             </div>
           )}
 

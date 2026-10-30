@@ -94,7 +94,6 @@ export function YouTubePlayer({
 
     if (activeVideoId.current !== next.videoId) {
       activeVideoId.current = next.videoId;
-      programmaticCommands.current = [];
       beginPendingVideo(next, instance, next.isPlaying ? 'load' : 'cue');
       return;
     }
@@ -121,7 +120,7 @@ export function YouTubePlayer({
       ? playerState === 1
       : playerState === 2 || playerState === 5;
     if (matchesAuthoritativePlayback) {
-      programmaticCommands.current = [];
+      lastProgrammaticCommand.current = null;
     }
     if (Math.abs(currentTime - expectedTime) > 1.5) {
       instance.seekTo(expectedTime, true);
@@ -195,6 +194,14 @@ export function YouTubePlayer({
               activeVideoId.current &&
               reportedVideoId !== activeVideoId.current
             ) {
+              const staleCommandIndex = programmaticCommands.current.findIndex(
+                (command) =>
+                  command.videoId === reportedVideoId &&
+                  command.playerState === event?.data
+              );
+              if (staleCommandIndex !== -1) {
+                programmaticCommands.current.splice(staleCommandIndex, 1);
+              }
               return;
             }
             const playerState = instance?.getPlayerState?.();
@@ -245,12 +252,15 @@ export function YouTubePlayer({
 
             if (event?.data === 1 || event?.data === 2) {
               const next = authoritativeStateRef.current;
+              // IFrame callbacks carry no command revision or origin; retain command records to arbitrate delayed acknowledgements.
               const commandIndex = programmaticCommands.current.findIndex(
                 (command) =>
-                  command.videoId === (reportedVideoId || activeVideoId.current) &&
-                  command.revision === next.revision &&
-                  (command.playerState === 1) === next.isPlaying &&
-                  command.playerState === event.data
+                  command.revision <= next.revision &&
+                  command.playerState === event.data &&
+                  (
+                    command.videoId === (reportedVideoId || activeVideoId.current) ||
+                    command.revision < next.revision
+                  )
               );
               if (commandIndex !== -1) {
                 programmaticCommands.current.splice(commandIndex, 1);
@@ -282,6 +292,14 @@ export function YouTubePlayer({
             } else if (event?.data === 5) {
               apply(authoritativeStateRef.current);
             }
+          },
+          onAutoplayBlocked: () => {
+            programmaticCommands.current = programmaticCommands.current.filter(
+              (command) => command.playerState !== 1
+            );
+            if (pendingVideo.current?.isPlaying) clearPendingVideo();
+            onLoadingChange?.(false);
+            onError?.('Your browser blocked autoplay. Use the YouTube player controls to start playback.');
           },
           onError: (event) => {
             const failedVideoId = event?.target?.getVideoData?.()?.video_id;
