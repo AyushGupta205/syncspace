@@ -4,6 +4,81 @@ const VIDEO_A = 'dQw4w9WgXcQ';
 const VIDEO_B = '9bZkp7q19f0';
 const VIDEO_C = 'M7lc1UVf-VE';
 
+const changeVideo = async (page, videoId) => {
+  await page.getByRole('button', { name: 'Toggle change video input' }).click();
+  await page.getByPlaceholder(/Paste YouTube link/).fill(videoId);
+  await page.getByRole('button', { name: 'Load Video' }).click();
+};
+
+const stubPlayer = (readyDelay = 250) => {
+  window.YT = {
+    Player: class {
+      constructor(element, options) {
+        this.state = -1;
+        this.time = 0;
+        this.videoId = options.videoId;
+        this.options = options;
+        this.loadCalls = [];
+        this.cueCalls = [];
+        window.__youtubePlayerCount = (window.__youtubePlayerCount || 0) + 1;
+        window.__youtubePlayers = window.__youtubePlayers || [];
+        window.__youtubePlayers.push(this);
+        window.__youtubePlayerVars = options.playerVars;
+        this.iframe = document.createElement('iframe');
+        this.iframe.title = 'Mock YouTube player';
+        this.iframe.dataset.videoId = options.videoId;
+        element.replaceChildren(this.iframe);
+        setTimeout(() => options.events.onReady({ target: this }), readyDelay);
+      }
+
+      getCurrentTime() { return this.time; }
+      getDuration() { return 600; }
+      getPlayerState() { return this.state; }
+      getVideoData() { return { title: 'Mock video', video_id: this.videoId }; }
+      getIframe() { return this.iframe; }
+      emitState(data, videoId = this.videoId) {
+        const target = Object.create(this);
+        target.getVideoData = () => ({ title: 'Mock video', video_id: videoId });
+        this.options.events.onStateChange({ target, data });
+      }
+      loadVideoById({ videoId, startSeconds = 0 }) {
+        this.loadCalls.push(videoId);
+        this.videoId = videoId;
+        this.iframe.dataset.videoId = videoId;
+        this.time = startSeconds;
+        this.state = 3;
+        this.emitState(3);
+        setTimeout(() => {
+          if (this.videoId !== videoId) {
+            this.emitState(1, videoId);
+            return;
+          }
+          this.state = 1;
+          this.emitState(1);
+        }, 60);
+      }
+      cueVideoById({ videoId, startSeconds = 0 }) {
+        this.cueCalls.push(videoId);
+        this.videoId = videoId;
+        this.iframe.dataset.videoId = videoId;
+        this.time = startSeconds;
+        this.state = 5;
+        this.emitState(5);
+      }
+      seekTo(time) { this.time = time; }
+      playVideo() {
+        this.state = 1;
+        this.emitState(1);
+      }
+      pauseVideo() {
+        this.state = 2;
+        this.emitState(2);
+      }
+      destroy() { this.iframe.remove(); }
+    },
+  };
+};
+
 test('landing room-mode tabs and mobile layout stay usable', async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(baseURL);
@@ -49,46 +124,6 @@ test('playback controls, role changes, and reconnection preserve the player inst
   const guestContext = await browser.newContext();
   const hostPage = await hostContext.newPage();
   const guestPage = await guestContext.newPage();
-  const stubPlayer = () => {
-    window.YT = {
-      Player: class {
-        constructor(element, options) {
-          this.state = 2;
-          this.time = 0;
-          window.__youtubePlayerCount = (window.__youtubePlayerCount || 0) + 1;
-          window.__youtubePlayers = window.__youtubePlayers || [];
-          window.__youtubePlayers.push(this);
-          window.__youtubePlayerVars = options.playerVars;
-          this.iframe = document.createElement('iframe');
-          this.iframe.title = 'Mock YouTube player';
-          this.iframe.dataset.videoId = options.videoId;
-          element.replaceChildren(this.iframe);
-          setTimeout(() => options.events.onReady({ target: this }), 250);
-        }
-
-        getCurrentTime() { return this.time; }
-        getDuration() { return 600; }
-        getPlayerState() { return this.state; }
-        getVideoData() { return { title: 'Mock video' }; }
-        getIframe() { return this.iframe; }
-        loadVideoById({ videoId, startSeconds = 0 }) {
-          this.iframe.dataset.videoId = videoId;
-          this.time = startSeconds;
-          this.state = 1;
-        }
-        cueVideoById({ videoId, startSeconds = 0 }) {
-          this.iframe.dataset.videoId = videoId;
-          this.time = startSeconds;
-          this.state = 5;
-        }
-        seekTo(time) { this.time = time; }
-        playVideo() { this.state = 1; }
-        pauseVideo() { this.state = 2; }
-        destroy() { this.iframe.remove(); }
-      },
-    };
-  };
-
   try {
     await hostPage.addInitScript(stubPlayer);
     await guestPage.addInitScript(stubPlayer);
@@ -122,6 +157,12 @@ test('playback controls, role changes, and reconnection preserve the player inst
     await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).time)).toBeGreaterThanOrEqual(10);
     expect(await hostPage.evaluate(() => window.__youtubePlayers.at(-1).time)).toBeLessThan(11);
     expect(await guestPage.evaluate(() => window.__youtubePlayers.at(-1).time)).toBeLessThan(11);
+    await changeVideo(hostPage, VIDEO_C);
+    await expect(hostPage.locator('.youtube-player iframe')).toHaveAttribute('data-video-id', VIDEO_C);
+    await expect(guestPage.locator('.youtube-player iframe')).toHaveAttribute('data-video-id', VIDEO_C);
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+    await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+
     await hostPage.getByRole('button', { name: 'Pause synchronized playback' }).click();
     await expect(hostPage.getByRole('button', { name: 'Play synchronized playback' })).toBeVisible();
     await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(2);
@@ -136,6 +177,9 @@ test('playback controls, role changes, and reconnection preserve the player inst
     await hostPage.getByRole('button', { name: 'Approve playback request from GuestUser' }).click();
     await expect(guestPage.locator('.request-status')).toContainText('Your request was approved.');
     await expect(hostPage.locator('.youtube-player iframe')).toHaveAttribute('data-video-id', VIDEO_B);
+    await expect(guestPage.locator('.youtube-player iframe')).toHaveAttribute('data-video-id', VIDEO_B);
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(5);
+    await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(5);
 
     await guestPage.reload();
     await expect(guestPage.locator('.person-row').filter({ hasText: 'GuestUser' }).locator('.role-badge'))
@@ -162,11 +206,10 @@ test('playback controls, role changes, and reconnection preserve the player inst
       .toHaveCSS('pointer-events', 'auto');
     expect(await guestPage.evaluate(() => window.__youtubePlayerCount)).toBe(guestPlayerCount);
 
-    await guestPage.getByRole('button', { name: 'Toggle change video input' }).click();
-    await guestPage.getByPlaceholder(/Paste YouTube link/).fill(VIDEO_C);
-    await guestPage.getByRole('button', { name: 'Load Video' }).click();
+    await changeVideo(guestPage, VIDEO_C);
     await expect(hostPage.locator('.youtube-player iframe')).toHaveAttribute('data-video-id', VIDEO_C);
     expect(await hostPage.evaluate(() => window.__youtubePlayerCount)).toBe(hostPlayerCount);
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(5);
 
     await hostPage.locator('.person-row')
       .filter({ hasText: 'GuestUser' })
@@ -179,6 +222,65 @@ test('playback controls, role changes, and reconnection preserve the player inst
       .toHaveText('Moderator');
     await expect(hostPage.getByText('In sync')).toBeVisible();
     expect(await hostPage.evaluate(() => window.__youtubePlayerCount)).toBe(hostPlayerCount);
+  } finally {
+    await hostContext.close();
+    await guestContext.close();
+  }
+});
+
+test('delayed YouTube readiness uses the latest room video and playback revision', async ({ browser, baseURL }) => {
+  const hostContext = await browser.newContext();
+  const guestContext = await browser.newContext();
+  const hostPage = await hostContext.newPage();
+  const guestPage = await guestContext.newPage();
+
+  try {
+    await hostPage.addInitScript(stubPlayer, 3000);
+    await guestPage.addInitScript(stubPlayer, 4000);
+    await hostPage.goto(baseURL);
+    await hostPage.getByLabel(/Display name/).fill('DelayedHost');
+    await hostPage.getByLabel(/YouTube URL or Video ID/).fill(VIDEO_A);
+    await hostPage.getByRole('button', { name: 'Start a Watch Party' }).click();
+    await expect(hostPage.locator('.room-code-pill .code-string')).toBeVisible();
+    await expect(hostPage.locator('.player-loading-overlay')).toBeVisible();
+
+    await changeVideo(hostPage, VIDEO_B);
+    await expect(hostPage.locator('.player-loading-overlay')).toBeVisible();
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).videoId))
+      .toBe(VIDEO_B);
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).cueCalls))
+      .toEqual([VIDEO_B]);
+    const roomCode = await hostPage.locator('.room-code-pill .code-string').textContent();
+    await expect(hostPage.locator('.player-loading-overlay')).toHaveCount(0, { timeout: 5000 });
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(5);
+
+    await guestPage.goto(`${baseURL}/?room=${roomCode}`);
+    await guestPage.getByLabel(/Display name/).fill('DelayedGuest');
+    await guestPage.getByRole('button', { name: 'Join Room' }).click();
+    await expect(guestPage.locator('.person-row').filter({ hasText: 'DelayedGuest' })).toBeVisible();
+    await expect(guestPage.locator('.player-loading-overlay')).toBeVisible();
+
+    await hostPage.getByRole('button', { name: 'Play synchronized playback' }).click();
+    await changeVideo(hostPage, VIDEO_C);
+    await changeVideo(hostPage, VIDEO_A);
+    await changeVideo(hostPage, VIDEO_B);
+    await expect(hostPage.locator('.youtube-player iframe')).toHaveAttribute('data-video-id', VIDEO_B);
+    await expect(guestPage.locator('.youtube-player iframe')).toHaveAttribute('data-video-id', VIDEO_B);
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+    await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).videoId))
+      .toBe(VIDEO_B);
+    await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).loadCalls))
+      .toEqual([VIDEO_B]);
+    await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).loadCalls))
+      .toEqual([VIDEO_C, VIDEO_A, VIDEO_B]);
+
+    await hostPage.evaluate(
+      (oldVideoId) => window.__youtubePlayers.at(-1).emitState(2, oldVideoId),
+      VIDEO_C
+    );
+    await expect(hostPage.getByRole('button', { name: 'Pause synchronized playback' })).toBeVisible();
+    await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
   } finally {
     await hostContext.close();
     await guestContext.close();

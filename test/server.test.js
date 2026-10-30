@@ -5,6 +5,7 @@ import { createPartyServer } from '../server/index.js';
 
 const VIDEO_A = 'dQw4w9WgXcQ';
 const VIDEO_B = '9bZkp7q19f0';
+const VIDEO_C = 'M7lc1UVf-VE';
 const delay = (ms = 40) => new Promise((resolve) => setTimeout(resolve, ms));
 const once = (socket, event, label = event) => new Promise((resolve, reject) => {
   const timer = setTimeout(() => {
@@ -57,8 +58,8 @@ test('room creation, authorization, synchronization, isolation, removal, and rec
   assert.match((await malformedTime).message, /Invalid playback position/);
   
   const seek = once(guest, 'sync_state'); host.emit('playback', { roomId: created.roomId, type: 'seek', time: 42 }); const seekState = await seek; assert.ok(Math.abs(seekState.currentTime - 42) < 0.1); assert.equal(seekState.revision, 2);
-  const video = once(guest, 'sync_state'); host.emit('playback', { roomId: created.roomId, type: 'video', videoId: VIDEO_B }); const videoState = await video; assert.equal(videoState.videoId, VIDEO_B); assert.equal(videoState.revision, 3);
-  const lateJoiner = await connect(); const lateState = await emit(lateJoiner, 'join_room', { roomId: created.roomId, username: 'Late' }); assert.equal(lateState.state.videoId, VIDEO_B); assert.equal(lateState.state.currentTime, 0); await delay();
+  const video = once(guest, 'sync_state'); host.emit('playback', { roomId: created.roomId, type: 'video', videoId: VIDEO_B }); const videoState = await video; assert.equal(videoState.videoId, VIDEO_B); assert.equal(videoState.isPlaying, true); assert.equal(videoState.revision, 3);
+  const lateJoiner = await connect(); const lateState = await emit(lateJoiner, 'join_room', { roomId: created.roomId, username: 'Late' }); assert.equal(lateState.state.videoId, VIDEO_B); assert.ok(lateState.state.currentTime < 1); assert.equal(lateState.state.isPlaying, true); await delay();
 
   const roleChange = once(guest, 'participants_updated'); host.emit('assign_role', { roomId: created.roomId, userId: joined.self.id, role: 'moderator' });
   assert.equal((await roleChange).find((member) => member.id === joined.self.id).role, 'moderator');
@@ -232,6 +233,112 @@ test('session recovery replaces active sockets and preserves roles and authoriza
   assert.equal(room.getParticipantById(expiringJoin.self.id), undefined);
 });
 
+test('video changes preserve authoritative playback state for members and reconnects', async (t) => {
+  const server = createPartyServer({ serveClient: false, dbPath: ':memory:' });
+  await new Promise((resolve) => server.httpServer.listen(0, resolve));
+  const url = `http://127.0.0.1:${server.httpServer.address().port}`;
+  const sockets = [];
+  const connect = async () => {
+    const socket = client(url, { transports: ['websocket'], forceNew: true });
+    sockets.push(socket);
+    await once(socket, 'connect');
+    return socket;
+  };
+  t.after(async () => {
+    sockets.forEach((socket) => socket.close());
+    await server.close();
+  });
+
+  const host = await connect();
+  const created = await emit(host, 'create_room', { username: 'VideoHost', videoId: VIDEO_A });
+  const moderator = await connect();
+  const moderatorJoin = await emit(moderator, 'join_room', {
+    roomId: created.roomId,
+    username: 'VideoModerator',
+  });
+  const participant = await connect();
+  const participantJoin = await emit(participant, 'join_room', {
+    roomId: created.roomId,
+    username: 'VideoParticipant',
+  });
+  const members = [host, moderator, participant];
+
+  const roleUpdate = once(host, 'participants_updated');
+  host.emit('assign_role', {
+    roomId: created.roomId,
+    userId: moderatorJoin.self.id,
+    role: 'moderator',
+  });
+  await roleUpdate;
+
+  const playingEvents = members.map((socket) => once(socket, 'sync_state'));
+  host.emit('playback', { roomId: created.roomId, type: 'play', time: 23 });
+  const playingStates = await Promise.all(playingEvents);
+  assert.ok(playingStates.every((state) => state.isPlaying));
+
+  const playingVideoEvents = members.map((socket) => once(socket, 'sync_state'));
+  host.emit('playback', { roomId: created.roomId, type: 'video', videoId: VIDEO_B });
+  const playingVideoStates = await Promise.all(playingVideoEvents);
+  assert.ok(playingVideoStates.every((state) =>
+    state.videoId === VIDEO_B && state.isPlaying && state.currentTime < 1
+  ));
+
+  const rejectedChange = once(participant, 'action_rejected');
+  participant.emit('playback', { roomId: created.roomId, type: 'video', videoId: VIDEO_C });
+  assert.match((await rejectedChange).message, /Only a host or moderator/);
+  assert.equal(server.rooms.get(created.roomId).state.videoId, VIDEO_B);
+
+  const moderatorVideoEvents = members.map((socket) => once(socket, 'sync_state'));
+  moderator.emit('change_video', { roomId: created.roomId, videoId: VIDEO_C });
+  const moderatorVideoStates = await Promise.all(moderatorVideoEvents);
+  assert.ok(moderatorVideoStates.every((state) =>
+    state.videoId === VIDEO_C && state.isPlaying
+  ));
+
+  const pausedEvents = members.map((socket) => once(socket, 'sync_state'));
+  host.emit('playback', { roomId: created.roomId, type: 'pause', time: 48 });
+  assert.ok((await Promise.all(pausedEvents)).every((state) => !state.isPlaying));
+
+  const pausedVideoEvents = members.map((socket) => once(socket, 'sync_state'));
+  host.emit('playback', { roomId: created.roomId, type: 'video', videoId: VIDEO_A });
+  const pausedVideoStates = await Promise.all(pausedVideoEvents);
+  assert.ok(pausedVideoStates.every((state) =>
+    state.videoId === VIDEO_A && !state.isPlaying && state.currentTime === 0
+  ));
+
+  const rapidFirstEvents = members.map((socket) => once(socket, 'sync_state'));
+  moderator.emit('playback', { roomId: created.roomId, type: 'video', videoId: VIDEO_B });
+  const rapidFirst = await Promise.all(rapidFirstEvents);
+  const rapidSecondEvents = members.map((socket) => once(socket, 'sync_state'));
+  moderator.emit('playback', { roomId: created.roomId, type: 'video', videoId: VIDEO_C });
+  const rapidSecond = await Promise.all(rapidSecondEvents);
+  assert.ok(rapidSecond.every((state, index) =>
+    state.videoId === VIDEO_C &&
+    state.isPlaying === false &&
+    state.revision > rapidFirst[index].revision
+  ));
+
+  const lateJoiner = await connect();
+  const lateState = await emit(lateJoiner, 'join_room', {
+    roomId: created.roomId,
+    username: 'LateVideoViewer',
+  });
+  assert.equal(lateState.state.videoId, VIDEO_C);
+  assert.equal(lateState.state.isPlaying, false);
+
+  const participantDisconnected = once(participant, 'disconnect');
+  participant.disconnect();
+  await participantDisconnected;
+  const reconnectedParticipant = await connect();
+  const resumed = await emit(reconnectedParticipant, 'resume_room', {
+    roomId: created.roomId,
+    sessionToken: participantJoin.self.sessionToken,
+  });
+  assert.equal(resumed.state.videoId, VIDEO_C);
+  assert.equal(resumed.state.isPlaying, false);
+  assert.equal(resumed.self.role, 'participant');
+});
+
 test('host transfer, reactions, direct play/pause/seek/change_video events, and granular room broadcasts', async (t) => {
   const { httpServer, io, pruneTimer, db } = createPartyServer({ serveClient: false, dbPath: ':memory:' });
   await new Promise((resolve) => httpServer.listen(0, resolve));
@@ -278,6 +385,7 @@ test('host transfer, reactions, direct play/pause/seek/change_video events, and 
   host.emit('change_video', { roomId: room.roomId, videoId: VIDEO_B });
   const vidState = await changeVidPromise;
   assert.equal(vidState.videoId, VIDEO_B);
+  assert.equal(vidState.isPlaying, false);
 
   // Test reaction event
   const reactionPromise = once(host, 'reaction');

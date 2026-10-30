@@ -154,7 +154,7 @@ export class SocketEventHandler {
   applyPlayback(room, action) {
     const update =
       action.type === 'video'
-        ? { videoId: action.videoId, currentTime: 0, isPlaying: false }
+        ? { videoId: action.videoId, currentTime: 0 }
         : action.type === 'play'
         ? { isPlaying: true, currentTime: action.time }
         : action.type === 'pause'

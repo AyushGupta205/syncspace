@@ -16,10 +16,57 @@ export function YouTubePlayer({
   const player = useRef(null);
   const ready = useRef(false);
   const activeVideoId = useRef('');
+  const pendingVideo = useRef(null);
+  const pendingVideoTimeout = useRef(null);
   const latestState = useRef(state);
   latestState.current = state;
   const latestCanControl = useRef(canControl);
   latestCanControl.current = canControl;
+
+  const clearPendingVideo = () => {
+    clearTimeout(pendingVideoTimeout.current);
+    pendingVideoTimeout.current = null;
+    pendingVideo.current = null;
+  };
+
+  const beginPendingVideo = (next, instance, command) => {
+    clearPendingVideo();
+    const pending = {
+      videoId: next.videoId,
+      revision: next.revision,
+      isPlaying: next.isPlaying,
+    };
+    pendingVideo.current = pending;
+    onLoadingChange?.(true);
+    pendingVideoTimeout.current = setTimeout(() => {
+      if (pendingVideo.current !== pending) return;
+      onLoadingChange?.(false);
+      if (pending.isPlaying) {
+        onError?.('Your browser may have blocked autoplay. Use the YouTube player controls to start playback.');
+      } else {
+        onError?.('YouTube is taking too long to load this video. Please try again.');
+      }
+    }, 10000);
+
+    if (command === 'load') {
+      const elapsed = next.isPlaying
+        ? Math.max(0, Date.now() - stateAnchorRef.current.receivedAt) / 1000
+        : 0;
+      instance.loadVideoById({
+        videoId: next.videoId,
+        startSeconds: next.currentTime + elapsed,
+      });
+    } else if (command === 'cue') {
+      instance.cueVideoById({
+        videoId: next.videoId,
+        startSeconds: next.currentTime,
+      });
+    } else if (next.isPlaying) {
+      instance.playVideo();
+    } else {
+      instance.pauseVideo();
+    }
+  };
 
   const apply = (next, detectLocalSeek = false) => {
     const instance = player.current;
@@ -27,15 +74,17 @@ export function YouTubePlayer({
 
     if (activeVideoId.current !== next.videoId) {
       activeVideoId.current = next.videoId;
-      onLoadingChange?.(true);
-      const elapsed = next.isPlaying
-        ? Math.max(0, Date.now() - stateAnchorRef.current.receivedAt) / 1000
-        : 0;
-      const options = { videoId: next.videoId, startSeconds: next.currentTime + elapsed };
-      if (next.isPlaying) {
-        instance.loadVideoById(options);
-      } else {
-        instance.cueVideoById(options);
+      beginPendingVideo(next, instance, next.isPlaying ? 'load' : 'cue');
+      return;
+    }
+
+    if (pendingVideo.current?.videoId === next.videoId) {
+      const pending = pendingVideo.current;
+      if (
+        pending.revision !== next.revision &&
+        pending.isPlaying !== next.isPlaying
+      ) {
+        beginPendingVideo(next, instance, 'playback');
       }
       return;
     }
@@ -46,6 +95,7 @@ export function YouTubePlayer({
     const expectedTime = next.currentTime + elapsed;
     const currentTime = instance.getCurrentTime?.() || 0;
     const playerState = instance.getPlayerState?.();
+    if (playerState === -1 || playerState === 3) return;
     if (Math.abs(currentTime - expectedTime) > 1.5) {
       if (
         detectLocalSeek &&
@@ -94,7 +144,6 @@ export function YouTubePlayer({
         events: {
           onReady: (event) => {
             ready.current = true;
-            onLoadingChange?.(false);
             onError?.('');
             if (playerRef) playerRef.current = event.target;
             const iframe = event.target?.getIframe?.();
@@ -103,16 +152,49 @@ export function YouTubePlayer({
               iframe.setAttribute('allowfullscreen', 'true');
             }
             fetchMeta(event.target);
-            apply(latestState.current);
+            if (latestState.current.videoId) {
+              apply(latestState.current);
+            } else {
+              onLoadingChange?.(false);
+            }
           },
           onStateChange: (event) => {
-            fetchMeta(event.target);
             const instance = event.target;
+            const reportedVideoId = instance?.getVideoData?.()?.video_id;
+            if (
+              reportedVideoId &&
+              activeVideoId.current &&
+              reportedVideoId !== activeVideoId.current
+            ) {
+              return;
+            }
+            const pending = pendingVideo.current;
+            if (pending) {
+              const eventVideoId = reportedVideoId || activeVideoId.current;
+              if (eventVideoId !== pending.videoId) return;
+              if (
+                (event?.data === 1 && pending.isPlaying) ||
+                ((event?.data === 2 || event?.data === 5) && !pending.isPlaying)
+              ) {
+                clearPendingVideo();
+              } else if (event?.data === 2 && pending.isPlaying) {
+                onLoadingChange?.(false);
+                onError?.('Your browser may have blocked autoplay. Use the YouTube player controls to start playback.');
+                return;
+              } else {
+                if (event?.data === -1 || event?.data === 3) {
+                  onLoadingChange?.(true);
+                }
+                return;
+              }
+            }
+            fetchMeta(instance);
             const curState = latestState.current;
             const hasControl = latestCanControl.current;
 
             if (event?.data === 1) {
               onLoadingChange?.(false);
+              onError?.('');
               onPlayerStateChange?.(true);
               if (hasControl && !curState.isPlaying) {
                 onSharedPlayback?.('play', instance.getCurrentTime?.() ?? curState.currentTime);
@@ -134,6 +216,15 @@ export function YouTubePlayer({
             }
           },
           onError: (event) => {
+            const failedVideoId = event?.target?.getVideoData?.()?.video_id;
+            if (
+              failedVideoId &&
+              activeVideoId.current &&
+              failedVideoId !== activeVideoId.current
+            ) {
+              return;
+            }
+            clearPendingVideo();
             onLoadingChange?.(false);
             let errorText = 'YouTube encountered an error loading this video.';
             if (event?.data === 150 || event?.data === 101) {
@@ -173,6 +264,7 @@ export function YouTubePlayer({
 
     return () => {
       window.onYouTubeIframeAPIReady = old;
+      clearPendingVideo();
       ready.current = false;
       player.current?.destroy();
       player.current = null;
