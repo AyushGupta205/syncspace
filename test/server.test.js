@@ -415,6 +415,120 @@ test('host transfer, reactions, direct play/pause/seek/change_video events, and 
   assert.equal((await succession).userId, room.self.id);
 });
 
+test('host transfer preserves playback, synchronizes new controls, and retains RBAC after recovery', async (t) => {
+  const server = createPartyServer({ serveClient: false, dbPath: ':memory:' });
+  await new Promise((resolve) => server.httpServer.listen(0, resolve));
+  const url = `http://127.0.0.1:${server.httpServer.address().port}`;
+  const sockets = [];
+  const connect = async () => {
+    const socket = client(url, { transports: ['websocket'], forceNew: true });
+    sockets.push(socket);
+    await once(socket, 'connect');
+    return socket;
+  };
+  t.after(async () => {
+    sockets.forEach((socket) => socket.close());
+    await server.close();
+  });
+
+  const host = await connect();
+  const room = await emit(host, 'create_room', { username: 'TransferHost', videoId: VIDEO_A });
+  const nextHost = await connect();
+  const nextHostJoin = await emit(nextHost, 'join_room', {
+    roomId: room.roomId,
+    username: 'NextHost',
+  });
+  const moderator = await connect();
+  const moderatorJoin = await emit(moderator, 'join_room', {
+    roomId: room.roomId,
+    username: 'TransferModerator',
+  });
+  const participant = await connect();
+  const participantJoin = await emit(participant, 'join_room', {
+    roomId: room.roomId,
+    username: 'TransferViewer',
+  });
+
+  const moderatorUpdated = once(moderator, 'participants_updated');
+  host.emit('assign_role', {
+    roomId: room.roomId,
+    userId: moderatorJoin.self.id,
+    role: 'moderator',
+  });
+  assert.equal((await moderatorUpdated).find((person) => person.id === moderatorJoin.self.id).role, 'moderator');
+
+  const playingForHost = once(host, 'sync_state');
+  host.emit('play', { roomId: room.roomId, time: 20 });
+  const playingState = await playingForHost;
+  assert.equal(playingState.isPlaying, true);
+  const roomState = server.rooms.get(room.roomId);
+  const revisionBeforeTransfer = roomState.state.revision;
+
+  const transferEvents = [
+    once(host, 'role_assigned'),
+    once(nextHost, 'role_assigned'),
+    once(moderator, 'role_assigned'),
+    once(participant, 'role_assigned'),
+  ];
+  host.emit('transfer_host', { roomId: room.roomId, userId: nextHostJoin.self.id });
+  await Promise.all(transferEvents);
+  assert.equal(roomState.state.revision, revisionBeforeTransfer);
+  assert.equal(roomState.state.videoId, VIDEO_A);
+  assert.equal(roomState.state.isPlaying, true);
+  assert.equal(roomState.getParticipantById(room.self.id).role, 'moderator');
+  assert.equal(roomState.getParticipantById(nextHostJoin.self.id).role, 'host');
+  assert.equal(roomState.getParticipantById(moderatorJoin.self.id).role, 'moderator');
+  assert.equal(roomState.getParticipantById(participantJoin.self.id).role, 'participant');
+
+  const pauseEvents = [once(host, 'sync_state'), once(moderator, 'sync_state'), once(participant, 'sync_state')];
+  nextHost.emit('pause', { roomId: room.roomId, time: 25 });
+  const pausedStates = await Promise.all(pauseEvents);
+  assert.ok(pausedStates.every((state) => state.isPlaying === false && state.videoId === VIDEO_A));
+
+  const seekEvents = [once(host, 'sync_state'), once(moderator, 'sync_state'), once(participant, 'sync_state')];
+  nextHost.emit('seek', { roomId: room.roomId, time: 60 });
+  const seekStates = await Promise.all(seekEvents);
+  assert.ok(seekStates.every((state) => state.currentTime === 60 && state.isPlaying === false));
+
+  const transferBackEvents = [once(host, 'role_assigned'), once(nextHost, 'role_assigned')];
+  nextHost.emit('transfer_host', { roomId: room.roomId, userId: room.self.id });
+  await Promise.all(transferBackEvents);
+  assert.equal(roomState.state.videoId, VIDEO_A);
+  assert.equal(roomState.state.currentTime, 60);
+  assert.equal(roomState.state.isPlaying, false);
+  assert.equal(roomState.getParticipantById(room.self.id).role, 'host');
+  assert.equal(roomState.getParticipantById(nextHostJoin.self.id).role, 'moderator');
+
+  const playEvents = [once(nextHost, 'sync_state'), once(moderator, 'sync_state'), once(participant, 'sync_state')];
+  host.emit('play', { roomId: room.roomId, time: 60 });
+  const resumedPlayback = await Promise.all(playEvents);
+  assert.ok(resumedPlayback.every((state) => state.isPlaying && state.videoId === VIDEO_A));
+
+  const rejectedParticipantAction = once(participant, 'action_rejected');
+  participant.emit('pause', { roomId: room.roomId, time: 60 });
+  assert.match((await rejectedParticipantAction).message, /Only a host or moderator/);
+  const stateBeforeModeratorAction = roomState.state.revision;
+  const moderatorPlayback = once(host, 'sync_state');
+  moderator.emit('pause', { roomId: room.roomId, time: 62 });
+  assert.equal((await moderatorPlayback).isPlaying, false);
+  assert.equal(roomState.state.revision, stateBeforeModeratorAction + 1);
+
+  const recoveredHost = await connect();
+  const recovered = await emit(recoveredHost, 'resume_room', {
+    roomId: room.roomId,
+    sessionToken: room.self.sessionToken,
+  });
+  assert.equal(recovered.self.id, room.self.id);
+  assert.equal(recovered.self.role, 'host');
+  assert.equal(recovered.state.videoId, VIDEO_A);
+  assert.equal(recovered.state.currentTime, 62);
+  assert.equal(recovered.state.isPlaying, false);
+  assert.equal(host.connected, false);
+  const recoveredHostSync = once(moderator, 'sync_state');
+  recoveredHost.emit('play', { roomId: room.roomId, time: 62 });
+  assert.equal((await recoveredHostSync).isPlaying, true);
+});
+
 test('participants must request approval before playback changes take effect', async (t) => {
   const server = createPartyServer({ serveClient: false, dbPath: ':memory:' });
   await new Promise((resolve) => server.httpServer.listen(0, resolve));

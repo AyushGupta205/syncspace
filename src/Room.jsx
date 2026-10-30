@@ -37,8 +37,10 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
   const messagesEndRef = useRef(null);
   const syncTimeoutRef = useRef(null);
   const playerRef = useRef(null);
+  const reconcilePlayerRef = useRef(null);
   const stateAnchorRef = useRef({ receivedAt: Date.now() });
   const revisionRef = useRef(initial.state.revision || 0);
+  const authoritativeStateRef = useRef(initial.state);
 
   const self = useMemo(
     () => people.find((p) => p.id === initial.self.id) || initial.self,
@@ -49,6 +51,7 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
   useEffect(() => {
     stateAnchorRef.current.receivedAt = Date.now();
     revisionRef.current = initial.state.revision || 0;
+    authoritativeStateRef.current = initial.state;
     setState(initial.state);
     setPlayerLoading(Boolean(initial.state.videoId));
     setActualPlaying(initial.state.isPlaying);
@@ -103,14 +106,14 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
     };
 
     const onSyncState = (next) => {
-      if (Number.isSafeInteger(next?.revision) && next.revision <= revisionRef.current) return;
-      if (Number.isSafeInteger(next?.revision)) revisionRef.current = next.revision;
+      if (!Number.isSafeInteger(next?.revision) || next.revision <= revisionRef.current) return;
+      revisionRef.current = next.revision;
+      authoritativeStateRef.current = { ...authoritativeStateRef.current, ...next };
       setSyncStatus('synchronizing');
       stateAnchorRef.current.receivedAt = Date.now();
-      setState((old) => ({ ...old, ...next }));
-      if (next.currentTime !== undefined) {
-        setCurrentTime(next.currentTime);
-      }
+      reconcilePlayerRef.current?.(authoritativeStateRef.current);
+      setState(authoritativeStateRef.current);
+      setCurrentTime(authoritativeStateRef.current.currentTime);
       clearTimeout(syncTimeoutRef.current);
       syncTimeoutRef.current = setTimeout(() => {
         if (socket?.connected) {
@@ -201,6 +204,9 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
     };
 
     const onRoleAssigned = (data) => {
+      if (Array.isArray(data?.participants)) {
+        setPeople(data.participants);
+      }
       setMessages((old) => [
         ...old.slice(-199),
         {
@@ -517,10 +523,10 @@ export function Room({ socket, initial, leave, theme, toggleTheme }) {
             {state.videoId ? (
               <YouTubePlayer
                 state={state}
+                authoritativeStateRef={authoritativeStateRef}
                 stateAnchorRef={stateAnchorRef}
                 playerRef={playerRef}
-                canControl={canControl}
-                onSharedPlayback={playback}
+                reconcileRef={reconcilePlayerRef}
                 onTitleChange={setVideoTitle}
                 onDurationChange={setDuration}
                 onPlayerStateChange={(isPlaying) => setActualPlaying(isPlaying)}

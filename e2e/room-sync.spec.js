@@ -20,6 +20,10 @@ const stubPlayer = (readyDelay = 250) => {
         this.options = options;
         this.loadCalls = [];
         this.cueCalls = [];
+        this.playCalls = 0;
+        this.pauseCalls = 0;
+        this.playDelay = 0;
+        this.pauseOnNextPlay = false;
         window.__youtubePlayerCount = (window.__youtubePlayerCount || 0) + 1;
         window.__youtubePlayers = window.__youtubePlayers || [];
         window.__youtubePlayers.push(this);
@@ -67,12 +71,29 @@ const stubPlayer = (readyDelay = 250) => {
       }
       seekTo(time) { this.time = time; }
       playVideo() {
+        this.playCalls += 1;
+        const delay = this.playDelay;
+        this.playDelay = 0;
         this.state = 1;
-        this.emitState(1);
+        if (this.pauseOnNextPlay) {
+          this.pauseOnNextPlay = false;
+          this.emitState(2);
+        }
+        setTimeout(() => {
+          this.state = 1;
+          this.emitState(1);
+        }, delay);
       }
       pauseVideo() {
+        this.pauseCalls += 1;
         this.state = 2;
         this.emitState(2);
+      }
+      scheduleState(state, delay) {
+        setTimeout(() => {
+          this.state = state;
+          this.emitState(state);
+        }, delay);
       }
       destroy() { this.iframe.remove(); }
     },
@@ -217,9 +238,80 @@ test('playback controls, role changes, and reconnection preserve the player inst
       .click();
     await expect(hostPage.locator('.person-row').filter({ hasText: 'GuestUser' }).locator('.role-badge'))
       .toHaveText('Host');
+    await expect(guestPage.locator('.person-row').filter({ hasText: 'HostUser' }).locator('.role-badge'))
+      .toHaveText('Moderator');
+    await hostPage.evaluate(() => {
+      window.__youtubePlayers.at(-1).pauseOnNextPlay = true;
+    });
+    const hostCallsBeforePlay = await hostPage.evaluate(() => ({
+      play: window.__youtubePlayers.at(-1).playCalls,
+      pause: window.__youtubePlayers.at(-1).pauseCalls,
+    }));
+    const guestCallsBeforePlay = await guestPage.evaluate(() => ({
+      play: window.__youtubePlayers.at(-1).playCalls,
+      pause: window.__youtubePlayers.at(-1).pauseCalls,
+    }));
+    await guestPage.getByRole('button', { name: 'Play synchronized playback' }).click();
+    await expect(guestPage.getByRole('button', { name: 'Pause synchronized playback' })).toBeVisible();
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).playCalls))
+      .toBe(hostCallsBeforePlay.play + 1);
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).pauseCalls))
+      .toBe(hostCallsBeforePlay.pause);
     await hostPage.reload();
     await expect(hostPage.locator('.person-row').filter({ hasText: 'HostUser' }).locator('.role-badge'))
       .toHaveText('Moderator');
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+    await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+    expect(await guestPage.evaluate((before) => ({
+      play: window.__youtubePlayers.at(-1).playCalls - before.play,
+      pause: window.__youtubePlayers.at(-1).pauseCalls - before.pause,
+    }), guestCallsBeforePlay)).toEqual({ play: 1, pause: 0 });
+
+    await hostPage.evaluate(() => {
+      window.__youtubePlayers.at(-1).scheduleState(2, 3500);
+    });
+    await hostPage.waitForTimeout(3600);
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+    await expect(guestPage.getByRole('button', { name: 'Pause synchronized playback' })).toBeVisible();
+
+    await hostPage.getByRole('button', { name: 'Pause synchronized playback' }).click();
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(2);
+    await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(2);
+
+    await hostPage.evaluate(() => {
+      window.__youtubePlayers.at(-1).scheduleState(1, 500);
+    });
+    await guestPage.getByRole('button', { name: 'Play synchronized playback' }).click();
+    await expect(guestPage.getByRole('button', { name: 'Pause synchronized playback' })).toBeVisible();
+    await guestPage.getByRole('button', { name: 'Pause synchronized playback' }).click();
+    await hostPage.waitForTimeout(600);
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(2);
+    await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(2);
+
+    await guestPage.getByRole('button', { name: 'Play synchronized playback' }).click();
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+    await changeVideo(guestPage, VIDEO_A);
+    await expect(hostPage.locator('.youtube-player iframe')).toHaveAttribute('data-video-id', VIDEO_A);
+    await expect(guestPage.locator('.youtube-player iframe')).toHaveAttribute('data-video-id', VIDEO_A);
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+    await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).state)).toBe(1);
+
+    await guestPage.getByRole('button', { name: 'Forward 10 seconds' }).click();
+    await expect.poll(() => hostPage.evaluate(() => window.__youtubePlayers.at(-1).time)).toBeGreaterThanOrEqual(10);
+    await expect.poll(() => guestPage.evaluate(() => window.__youtubePlayers.at(-1).time)).toBeGreaterThanOrEqual(10);
+    await guestPage.locator('.person-row')
+      .filter({ hasText: 'HostUser' })
+      .getByRole('button', { name: 'Make Host' })
+      .click();
+    await expect(guestPage.locator('.person-row').filter({ hasText: 'HostUser' }).locator('.role-badge'))
+      .toHaveText('Host');
+    await expect(hostPage.locator('.person-row').filter({ hasText: 'GuestUser' }).locator('.role-badge'))
+      .toHaveText('Moderator');
+    await hostPage.reload();
+    await expect(hostPage.locator('.person-row').filter({ hasText: 'HostUser' }).locator('.role-badge'))
+      .toHaveText('Participant');
+    await expect(guestPage.locator('.person-row').filter({ hasText: 'GuestUser' }).locator('.role-badge'))
+      .toHaveText('Host');
     await expect(hostPage.getByText('In sync')).toBeVisible();
     expect(await hostPage.evaluate(() => window.__youtubePlayerCount)).toBe(hostPlayerCount);
   } finally {

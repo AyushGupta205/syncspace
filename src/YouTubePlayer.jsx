@@ -2,10 +2,10 @@ import { useEffect, useRef } from 'react';
 
 export function YouTubePlayer({
   state,
+  authoritativeStateRef,
   stateAnchorRef,
   playerRef,
-  canControl,
-  onSharedPlayback,
+  reconcileRef,
   onTitleChange,
   onDurationChange,
   onPlayerStateChange,
@@ -18,10 +18,6 @@ export function YouTubePlayer({
   const activeVideoId = useRef('');
   const pendingVideo = useRef(null);
   const pendingVideoTimeout = useRef(null);
-  const latestState = useRef(state);
-  latestState.current = state;
-  const latestCanControl = useRef(canControl);
-  latestCanControl.current = canControl;
 
   const clearPendingVideo = () => {
     clearTimeout(pendingVideoTimeout.current);
@@ -61,14 +57,11 @@ export function YouTubePlayer({
         videoId: next.videoId,
         startSeconds: next.currentTime,
       });
-    } else if (next.isPlaying) {
-      instance.playVideo();
-    } else {
-      instance.pauseVideo();
-    }
+    } else if (next.isPlaying) instance.playVideo();
+    else instance.pauseVideo();
   };
 
-  const apply = (next, detectLocalSeek = false) => {
+  const apply = (next) => {
     const instance = player.current;
     if (!ready.current || !instance) return;
 
@@ -97,14 +90,6 @@ export function YouTubePlayer({
     const playerState = instance.getPlayerState?.();
     if (playerState === -1 || playerState === 3) return;
     if (Math.abs(currentTime - expectedTime) > 1.5) {
-      if (
-        detectLocalSeek &&
-        latestCanControl.current &&
-        (playerState === 1 || playerState === 2)
-      ) {
-        onSharedPlayback?.('seek', currentTime);
-        return;
-      }
       instance.seekTo(expectedTime, true);
     }
 
@@ -130,7 +115,7 @@ export function YouTubePlayer({
     const create = () => {
       if (!mount.current || player.current || !window.YT?.Player) return;
       player.current = new window.YT.Player(mount.current, {
-        videoId: latestState.current.videoId,
+        videoId: authoritativeStateRef.current.videoId,
         playerVars: {
           controls: 1,
           disablekb: 0,
@@ -152,8 +137,9 @@ export function YouTubePlayer({
               iframe.setAttribute('allowfullscreen', 'true');
             }
             fetchMeta(event.target);
-            if (latestState.current.videoId) {
-              apply(latestState.current);
+            reconcileRef.current = apply;
+            if (authoritativeStateRef.current.videoId) {
+              apply(authoritativeStateRef.current);
             } else {
               onLoadingChange?.(false);
             }
@@ -189,26 +175,16 @@ export function YouTubePlayer({
               }
             }
             fetchMeta(instance);
-            const curState = latestState.current;
-            const hasControl = latestCanControl.current;
 
             if (event?.data === 1) {
               onLoadingChange?.(false);
               onError?.('');
               onPlayerStateChange?.(true);
-              if (hasControl && !curState.isPlaying) {
-                onSharedPlayback?.('play', instance.getCurrentTime?.() ?? curState.currentTime);
-              } else if (!hasControl && !curState.isPlaying) {
-                instance.pauseVideo();
-              }
+              apply(authoritativeStateRef.current);
             } else if (event?.data === 2) {
               onLoadingChange?.(false);
               onPlayerStateChange?.(false);
-              if (hasControl && curState.isPlaying) {
-                onSharedPlayback?.('pause', instance.getCurrentTime?.() ?? curState.currentTime);
-              } else if (!hasControl && curState.isPlaying) {
-                instance.playVideo();
-              }
+              apply(authoritativeStateRef.current);
             } else if (event?.data === -1 || event?.data === 3) {
               onLoadingChange?.(true);
             } else if (event?.data === 5) {
@@ -265,6 +241,7 @@ export function YouTubePlayer({
     return () => {
       window.onYouTubeIframeAPIReady = old;
       clearPendingVideo();
+      if (reconcileRef.current === apply) reconcileRef.current = null;
       ready.current = false;
       player.current?.destroy();
       player.current = null;
@@ -273,11 +250,11 @@ export function YouTubePlayer({
   }, []);
 
   useEffect(() => {
-    apply(state);
-  }, [state.videoId, state.currentTime, state.isPlaying]);
+    apply(authoritativeStateRef.current);
+  }, [state.videoId, state.currentTime, state.isPlaying, state.revision]);
 
   useEffect(() => {
-    const timer = setInterval(() => apply(latestState.current, true), 2000);
+    const timer = setInterval(() => apply(authoritativeStateRef.current), 2000);
     return () => clearInterval(timer);
   }, []);
 
