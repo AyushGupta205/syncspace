@@ -267,17 +267,9 @@ npm test
 tests 3 | suites 0 | pass 3 | fail 0 | cancelled 0 | skipped 0
 ```
 
-### 2. Run Comprehensive Multi-Session Audit
-```bash
-node scratch/comprehensive_test.mjs
-```
-Verifies 10 real-world end-to-end socket flows including concurrent rooms, host transfer, rate limiting, and reconnect recovery.
-
-### 3. Run Controlled Load Simulation
-```bash
-node scratch/load_test.mjs
-```
-**Benchmark Result:** Successfully connected and synchronized **50 concurrent socket clients across 5 independent rooms in 580ms** with zero dropped packets or memory spikes.
+### 2. Verified Multi-Session Audit & Benchmark History
+- **Multi-Session Functional Verification**: Verified 10 real-world end-to-end socket flows including cross-room isolation, host transfer, chat rate limiting, and reconnect recovery.
+- **Historical Load Benchmark**: In a previously executed controlled concurrency test, SyncSpace successfully connected and synchronized **50 concurrent socket clients across 5 independent rooms in 580ms** with zero dropped packets or memory spikes. Larger-scale capacity has not yet been benchmarked.
 
 ---
 
